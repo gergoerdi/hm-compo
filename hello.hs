@@ -3,6 +3,9 @@
 {-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE RecordWildCards #-}
 
 import Control.Unification
 import Control.Unification.STVar
@@ -27,9 +30,11 @@ import Data.Maybe
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 
-data TyF tcon tv r
+import Debug.Trace
+
+data TyF tcon tv k
     = TVar tv
-    | TApp r r
+    | TApp k k
     | TCon tcon
     deriving (Eq, Show, Functor, Foldable, Traversable)
 
@@ -52,7 +57,16 @@ type Ty = Fix Ty0
 type MVar s = STVar s Ty0
 type MTy s = UTerm Ty0 (MVar s)
 
-type Err s = UFailure Ty0 (MVar s)
+data Err0 t v = UErr (UFailure t v)
+              | Err String
+
+deriving instance (Show v, Show (t (UTerm t v))) => Show (Err0 t v)
+
+type Err s = Err0 Ty0 (MVar s)
+
+instance Fallible t v (Err0 t v) where
+    occursFailure v t = UErr $ occursFailure v t
+    mismatchFailure t u = UErr $ mismatchFailure t u
 
 tApps :: Ty -> (Ty, [Ty])
 tApps t = case go t of
@@ -67,6 +81,22 @@ tApps' t = case go t of
   where
     go (UTerm (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
     go t = (t, [])
+
+-- tFunArgs :: MTy s -> ([MTy s], MTy s)
+-- tFunArgs t = case go t of
+--     (UTerm (TCon "Fun"), t:ts) -> (reverse ts, t)
+--     _ -> ([], t)
+--   where
+--     go (UTerm (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
+--     go t = (t, [])
+
+tFunArgs :: MTy s -> ([MTy s], MTy s)
+tFunArgs t = case go t of
+    (ts, t0) -> (ts, t0)
+  where
+    go (UTerm (TApp (UTerm (TApp (UTerm (TCon "Fun")) t)) u)) =
+        case go u of (ts, t0) -> (t:ts, t0)
+    go t = ([], t)
 
 instance Pretty Ty where
     pPrintPrec level = go
@@ -100,13 +130,34 @@ instance Pretty (MTy s) where
                   | otherwise = id
         go p (UVar v) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
 
--- pprMTy :: MTy s -> Doc
--- pprMTy
+data Term0 dcon var
+    = Var var
+    | Con dcon
+    | Lam var (Term0 dcon var)
+    | App (Term0 dcon var) (Term0 dcon var)
+    | Case (Term0 dcon var) [(Pat0 dcon var, Term0 dcon var)]
+    | Let [(var, Term0 dcon var)] (Term0 dcon var)
 
-newtype M s a = M{ unM :: ExceptT (Err s) (RWST () () Int (STBinding s)) a }
-              deriving (Functor, Applicative, Monad)
+data Pat0 dcon var
+    = PVar var
+    | PWild
+    | PCon dcon [Pat0 dcon var]
 
--- instance PrettyM (M s) (MTy s)
+type Var = String
+type DCon = String
+
+type Term = Term0 DCon Var
+type Pat = Pat0 DCon Var
+
+data PCtx s = PCtx{ polyVars :: Map Var (MTy s)
+                  , dataCons :: Map DCon Ty
+                  }
+
+newtype M s a = M{ unM :: ExceptT (Err s) (RWST (PCtx s) () () (STBinding s)) a }
+              deriving (Functor, Applicative, Monad, MonadReader (PCtx s))
+
+withVar :: Var -> MTy s -> M s a -> M s a
+withVar v ty = local (\pc -> pc{ polyVars = Map.insert v ty $ polyVars pc })
 
 instance BindingMonad Ty0 (MVar s) (M s) where
     lookupVar = M . lift . lift . lookupVar
@@ -132,7 +183,7 @@ instantiate free ty = do
   where
     walk :: MTy s -> Remap TVar (MVar s) (MTy s)
     walk (UTerm (TVar alpha))
-      | free alpha = Pair (Constant $ Set.singleton alpha) (asks $ UVar . fromJust . Map.lookup alpha)
+      | free alpha = UVar <$> remap alpha
       | otherwise = UTerm <$> pure (TVar alpha)
 
     walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
@@ -141,31 +192,31 @@ instantiate free ty = do
 
 t `tTo` u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
 
-foo :: forall s. M s (MTy s)
-foo = do
-    let ta = UTerm $ TVar "a"
-        tb = UTerm $ TVar "b"
-        tList t = UTerm $ (UTerm $ TCon "List") `TApp` t
-    let tMapPoly = (ta `tTo` tb) `tTo` (tList ta `tTo` tList tb)
+-- foo :: forall s. M s (MTy s)
+-- foo = do
+--     let ta = UTerm $ TVar "a"
+--         tb = UTerm $ TVar "b"
+--         tList t = UTerm $ (UTerm $ TCon "List") `TApp` t
+--     let tMapPoly = (ta `tTo` tb) `tTo` (tList ta `tTo` tList tb)
 
-    let tInt = UTerm $ TCon "Int"
-        tMaybe t = UTerm $ (UTerm $ TCon "Maybe") `TApp` t
-        tMapMono = (tInt `tTo` tMaybe tInt) `tTo` (tList tInt `tTo` tList (tMaybe tInt))
+--     let tInt = UTerm $ TCon "Int"
+--         tMaybe t = UTerm $ (UTerm $ TCon "Maybe") `TApp` t
+--         tMapMono = (tInt `tTo` tMaybe tInt) `tTo` (tList tInt `tTo` tList (tMaybe tInt))
 
-    tMapPoly' <- instantiate (const True) tMapPoly
-    -- tv <- UVar <$> freeVar
-    t2 <- runIdentityT $ tMapMono =:= tMapPoly'
-    t2 <- runIdentityT $ applyBindings t2
-    return $ tMapPoly'
-    -- return $ freeze tMapPoly
+--     tMapPoly' <- instantiate (const True) tMapPoly
+--     -- tv <- UVar <$> freeVar
+--     t2 <- runIdentityT $ tMapMono =:= tMapPoly'
+--     t2 <- runIdentityT $ applyBindings t2
+--     return $ tMapPoly'
+--     -- return $ freeze tMapPoly
 
-foo' :: forall s. M s Doc
-foo' = do
-    -- mt <- foo
-    -- case mt of
-    --     Nothing -> return $ text "<err>"
-    --     Just t -> return $ pPrint t
-    pPrint <$> foo
+-- foo' :: forall s. M s Doc
+-- foo' = do
+--     -- mt <- foo
+--     -- case mt of
+--     --     Nothing -> return $ text "<err>"
+--     --     Just t -> return $ pPrint t
+--     pPrint <$> foo
 
 -- runM :: (forall s. M s a) -> Either String a
 -- runM act = runSTBinding $ do
@@ -177,7 +228,85 @@ foo' = do
 --     (x, _, _) <- runRWST (runExceptT $ unM act) () 0
 --     return x
 
+tyCheck :: MTy s -> Term -> M s ()
+tyCheck t e = case e of
+    Var v -> do
+        vt <- asks $ Map.lookup v . polyVars
+        vt <- case vt of
+            Nothing -> throwError $ Err $ unwords ["Not in scope:", show v]
+            Just vt -> return vt
+        runIdentityT $ vt =:= t
+        return ()
+    Con dcon -> do
+        ct <- asks $ Map.lookup dcon . dataCons
+        ct <- case ct of
+            Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
+            Just ct -> return ct
+        ct <- instantiate (const True) $ unfreeze ct
+        runIdentityT $ ct =:= t
+        return ()
+    Lam v e -> do
+        t0 <- UVar <$> freeVar
+        withVar v t0 $ do
+            u <- tyInfer e
+            runIdentityT $ (t0 `tTo` u) =:= t
+        return ()
+    App f e -> do
+        t1 <- tyInfer f
+        t2 <- tyInfer e
+        runIdentityT $ t1 =:= t2 `tTo` t
+        return ()
+    Case e bs -> do
+        t0 <- tyInfer e
+        forM_ bs $ \(pat, e) -> do
+            tyCheckPat t0 pat $ tyCheck t e
+
+tyCheckPat :: MTy s -> Pat -> M s a -> M s a
+tyCheckPat t p body = case p of
+    PWild -> body
+    PVar v -> withVar v t body
+    PCon dcon ps -> do
+        ct <- asks $ Map.lookup dcon . dataCons
+        ct <- case ct of
+            Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
+            Just ct -> return ct
+        ct <- instantiate (const True) $ unfreeze ct
+        let (tArgs, t0) = tFunArgs ct
+        runIdentityT $ t =:= t0
+        unless (length ps == length tArgs) $
+          throwError $ Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs, show $ pPrint ct]
+        go (zip tArgs ps)
+      where
+        go ((t, p):tps) = tyCheckPat t p $ go tps
+        go [] = body
+
+tyInfer :: Term -> M s (MTy s)
+tyInfer e = do
+    ty <- UVar <$> freeVar
+    tyCheck ty e
+    return ty
+
 runM :: M s a -> STBinding s a
 runM act = do
-    (x, _, _) <- runRWST (runExceptT $ unM act) () 0
+    let polyVars = mempty
+        dataCons = Map.fromList [ ("Nil", tList alpha)
+                                , ("Cons", alpha ~> (tList alpha ~> tList alpha))
+                                ]
+          where
+            t ~> u = Fix $ TApp (Fix $ TApp (Fix $ TCon "Fun") t) u
+            alpha = (Fix $ TVar "α")
+            tList = Fix . TApp (Fix $ TCon "List")
+    (x, _, _) <- runRWST (runExceptT $ unM act) PCtx{..} ()
     return $ either (error . show) id x
+
+foo :: M s Doc
+foo = do
+    t <- tyInfer e
+    t <- runIdentityT $ applyBindings t
+    return $ pPrint t
+  where
+    e = Lam "f" $ Lam "xs" $ Case (Var "xs")
+          [ (PCon "Nil" [], Con "Nil")
+          , (PCon "Cons" [PVar "x", PVar "xs"],
+             (Con "Cons" `App` (Var "f" `App` Var "x")) `App` (Var "xs"))
+          ]
