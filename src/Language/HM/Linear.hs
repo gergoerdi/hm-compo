@@ -23,6 +23,7 @@ import Control.Monad.Except
 import Control.Monad.RWS hiding (Product)
 import Control.Monad.Reader
 import Control.Monad.Writer hiding (Product)
+import Control.Monad.Identity
 import Control.Monad.Trans.Identity
 import Data.Functor.Product
 import Data.Functor.Constant
@@ -103,11 +104,10 @@ polyMetaVars = execWriter . traverse_ go
     go (UVar (Left a)) = pure ()
     go (UVar (Right v)) = tell $ Set.singleton v
 
-generalise :: forall s a. [MTy s] -> M s [MPolyTy s]
+generalise :: forall s a t. (Traversable t) => t (MTy s) -> M s (t (MPolyTy s))
 generalise tys = do
     tys <- runIdentityT $ applyBindingsAll tys
     tysInScope <- asks $ Map.elems . polyVars
-    -- tvsInScope <- undefined -- fmap (Set.fromList . concat . map lefts) $ traverse getFreeVars tysInScope
     let tvsInScope = polyMetaVars tysInScope
     let Pair (Constant mvars) fill = traverse (walk (`Set.notMember` tvsInScope)) tys
     runReader fill <$> traverse (const fresh) (Map.fromSet (const ()) mvars)
@@ -118,9 +118,10 @@ generalise tys = do
     walk free (UVar v) | free v = UVar <$> (Left <$> remap v)
                        | otherwise = UVar <$> pure (Right v)
 
-instantiate :: forall s. MPolyTy s -> M s (MTy s)
-instantiate ty = do
-    let Pair (Constant tvars) fill = walk ty
+instantiateN :: forall m s t. (BindingMonad Ty0 (MVar s) m, Traversable t)
+             => t (MPolyTy s) -> m (t (MTy s))
+instantiateN ty = do
+    let Pair (Constant tvars) fill = traverse walk ty
     tvars <- traverse (const freeVar) $ Map.fromSet (const ()) tvars
     return $ runReader fill tvars
   where
@@ -130,7 +131,14 @@ instantiate ty = do
     walk (UVar (Left a)) = UVar <$> remap a
     walk (UVar (Right v)) = UVar <$> pure v
 
-t `tTo` u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
+instantiate :: forall m s. (BindingMonad Ty0 (MVar s) m)
+             => MPolyTy s -> m (MTy s)
+instantiate = fmap runIdentity . instantiateN . Identity
+
+(~>) :: UTerm Ty0 v -> UTerm Ty0 v -> UTerm Ty0 v
+t ~> u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
+
+infixr 7 ~>
 
 tyCheck :: MTy s -> Term -> M s ()
 tyCheck t e = case unFix e of
@@ -152,12 +160,12 @@ tyCheck t e = case unFix e of
         t0 <- UVar <$> freeVar
         withVar v (mono t0) $ do
             u <- tyInfer e
-            runIdentityT $ (t0 `tTo` u) =:= t
+            runIdentityT $ t0 ~> u =:= t
         return ()
     App f e -> do
         t1 <- tyInfer f
         t2 <- tyInfer e
-        runIdentityT $ t1 =:= t2 `tTo` t
+        runIdentityT $ t1 =:= t2 ~> t
         return ()
     Case e as -> do
         t0 <- tyInfer e
@@ -206,13 +214,12 @@ runM :: M s a -> STBinding s a
 runM act = do
     let polyVars = mempty
         dataCons = Map.fromList [ ("Nil", tList alpha)
-                                , ("Cons", alpha ~> (tList alpha ~> tList alpha))
-                                , ("MkPair", alpha ~> (beta ~> tPair alpha beta))
+                                , ("Cons", alpha ~> tList alpha ~> tList alpha)
+                                , ("MkPair", alpha ~> beta ~> tPair alpha beta)
                                 ]
           where
             alpha = UVar (-1)
             beta = UVar (-2)
-            t ~> u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
             tList = UTerm . TApp (UTerm $ TCon "List")
             tPair t u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Pair") t) u
     (x, _, _) <- runRWST (runExceptT $ unM act) PCtx{..} 0
