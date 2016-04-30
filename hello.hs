@@ -20,6 +20,7 @@ import Data.Bifunctor
 import Control.Monad.RWS hiding (Product)
 import Control.Monad.Reader
 import Control.Monad.Writer hiding (Product)
+import Control.Monad.State
 import Control.Monad.Trans.Identity
 import Data.Functor.Product
 import Data.Functor.Constant
@@ -32,15 +33,22 @@ import Data.Maybe
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Function
+import Data.Stream (Stream(..))
+import qualified Data.Stream as Stream
+import Data.List (nub)
 
 import Debug.Trace
 
-data TyF tcon k
-    = TApp k k
+data TyF tcon tv a
+    = TApp a a
     | TCon tcon
+    | TVar tv
     deriving (Eq, Show, Functor, Foldable, Traversable)
 
-instance (Eq tcon) => Unifiable (TyF tcon) where
+instance (Eq tcon, Eq tv) => Unifiable (TyF tcon tv) where
+    zipMatch (TVar a) (TVar b) = do
+        guard $ a == b
+        return $ TVar a
     zipMatch (TCon dc1) (TCon dc2) = do
         guard $ dc1 == dc2
         return $ TCon dc1
@@ -50,12 +58,11 @@ instance (Eq tcon) => Unifiable (TyF tcon) where
 
 type TCon = String
 type TVar = String
-type Ty0 = TyF TCon
+type Ty0 = TyF TCon TVar
 
 type Ty = Fix Ty0
 type MVar s = STVar s Ty0
 type MTy s = UTerm Ty0 (MVar s)
-type MPolyTy s = (Set (MVar s), MTy s)
 
 instance Ord (STVar s t) where
     compare = compare `on` getVarID
@@ -70,9 +77,6 @@ type Err s = Err0 Ty0 (MVar s)
 instance Fallible t v (Err0 t v) where
     occursFailure v t = UErr $ occursFailure v t
     mismatchFailure t u = UErr $ mismatchFailure t u
-
-mono :: MTy s -> MPolyTy s
-mono ty = (mempty, ty)
 
 tApps :: Ty -> (Ty, [Ty])
 tApps t = case go t of
@@ -104,6 +108,7 @@ instance Pretty Ty where
                 (tcon, []) -> go 0 tcon
                 (tcon, targs) -> par 2 $ go 0 tcon <+> hsep (map (go 2) targs)
             TCon tcon -> text tcon
+            TVar a -> text a
           where
             par i | p >= i = parens
                   | otherwise = id
@@ -120,6 +125,7 @@ instance Pretty (MTy s) where
                 (tcon, []) -> go 0 tcon
                 (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
             TCon tcon -> pure $ text tcon
+            TVar a -> pure $ text a
           where
             par i | p >= i = parens
                   | otherwise = id
@@ -148,17 +154,18 @@ type DCon = String
 type Term = Term0 DCon Var
 type Pat = Pat0 DCon Var
 
-data PCtx s = PCtx{ polyVars :: Map Var (MPolyTy s)
-                  , dataCons :: Map DCon (MTy s)
+data PCtx s = PCtx{ polyVars :: Map Var (MTy s)
+                  , tvarSupply :: Stream TVar
+                  , dataCons :: Map DCon Ty
                   }
 
 newtype M s a = M{ unM :: ExceptT (Err s) (RWST (PCtx s) () () (STBinding s)) a }
               deriving (Functor, Applicative, Monad, MonadReader (PCtx s))
 
-withVar :: Var -> MPolyTy s -> M s a -> M s a
+withVar :: Var -> MTy s -> M s a -> M s a
 withVar v ty = local $ \pc -> pc{ polyVars = Map.insert v ty $ polyVars pc }
 
-withVars :: Map Var (MPolyTy s) -> M s a -> M s a
+withVars :: Map Var (MTy s) -> M s a -> M s a
 withVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
 
 instance BindingMonad Ty0 (MVar s) (M s) where
@@ -177,19 +184,44 @@ type Remap from to = Staged (Set from) (Map from to)
 remap :: (Ord from) => from -> Remap from to to
 remap x = Pair (Constant (Set.singleton x)) (asks $ fromJust . Map.lookup x)
 
-instantiate :: forall s. (MVar s -> Bool) -> MTy s -> M s (MTy s)
-instantiate free ty = do
+generalise :: forall s a. [MTy s] -> ([MTy s] -> M s a) -> M s a
+generalise tys body = do
+    tvs <- asks tvarSupply
+    tys <- runIdentityT $ applyBindingsAll tys
+
+    tysInScope <- asks $ Map.elems . polyVars
+    tvsInScope <- fmap (Set.fromList . concat) $ traverse getFreeVars tysInScope
+    let Pair (Constant mvars) fill = traverse (walk (`Set.notMember` tvsInScope)) tys
+        assign = do
+            Cons tv tvs <- get
+            put tvs
+            return tv
+        mvars' = nub mvars
+        (tvars, supply') = runState (traverse (const assign) mvars') tvs
+    let tys' = runReader fill $ Map.fromList (zip mvars' tvars)
+    local (\pc -> pc{ tvarSupply = supply' }) $ body tys'
+  where
+    walk :: (MVar s -> Bool) -> MTy s -> Staged [MVar s] (Map (MVar s) TVar) (MTy s)
+    walk free (UTerm (TVar a)) = UTerm <$> pure (TVar a)
+    walk free (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk free t <*> walk free u)
+    walk free (UTerm (TCon con)) = UTerm <$> pure (TCon con)
+    walk free (UVar v) | free v = UTerm <$> (TVar <$> remap v)
+                       | otherwise = UVar <$> pure v
+      where
+        remap v = Pair (Constant [v]) (asks $ fromJust . Map.lookup v)
+
+instantiate :: forall s. MTy s -> M s (MTy s)
+instantiate ty = do
     ty <- runIdentityT $ applyBindings ty
     let Pair (Constant tvars) fill = walk ty
     tvars <- traverse (const freeVar) $ Map.fromSet (const ()) tvars
     return $ runReader fill tvars
   where
-    walk :: MTy s -> Remap (MVar s) (MVar s) (MTy s)
+    walk :: MTy s -> Remap TVar (MVar s) (MTy s)
+    walk (UTerm (TVar a)) = UVar <$> remap a
     walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
     walk (UTerm (TCon con)) = UTerm <$> pure (TCon con)
-    walk (UVar a)
-      | free a = UVar <$> remap a
-      | otherwise = UVar <$> pure a
+    walk (UVar v) = UVar <$> pure v
 
 t `tTo` u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
 
@@ -199,20 +231,19 @@ tyCheck t e = case e of
         vt <- asks $ Map.lookup v . polyVars
         vt <- case vt of
             Nothing -> throwError $ Err $ unwords ["Not in scope:", show v]
-            Just (fvs, t) -> instantiate (`Set.member` fvs) t
+            Just t -> instantiate t
         runIdentityT $ vt =:= t
         return ()
     Con dcon -> do
         ct <- asks $ Map.lookup dcon . dataCons
         ct <- case ct of
             Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
-            Just ct -> return ct
-        ct <- instantiate (const True) ct
+            Just ct -> instantiate $ unfreeze ct
         runIdentityT $ ct =:= t
         return ()
     Lam v e -> do
         t0 <- UVar <$> freeVar
-        withVar v (mono t0) $ do
+        withVar v t0 $ do
             u <- tyInfer e
             runIdentityT $ (t0 `tTo` u) =:= t
         return ()
@@ -231,15 +262,9 @@ tyCheck t e = case e of
       where
         go (bs:bss) = do
             tvs <- traverse (const $ UVar <$> freeVar) bs
-            withVars (Map.fromList $ zip (map fst bs) (map mono tvs)) $
+            withVars (Map.fromList $ zip (map fst bs) tvs) $
               zipWithM_ tyCheck tvs (map snd bs)
-            tysInScope <- asks $ Map.elems . polyVars
-            tvsInScope <- fmap (Set.fromList . concat) $ traverse (getFreeVars . snd) tysInScope
-            traceShow "go" $ return ()
-            ts <- forM (bs `zip` tvs) $ \((v, _), t) -> do
-                fvs <- (Set.\\ tvsInScope) . Set.fromList <$> getFreeVars t
-                return (v, (fvs, t))
-            withVars (Map.fromList ts) $ go bss
+            generalise tvs $ \ts -> withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
         go [] = tyCheck t e
 
 freeVarsOfTerm :: Term -> Set Var
@@ -268,13 +293,12 @@ freeVarsOfPat = execWriter . go
 tyCheckPat :: MTy s -> Pat -> M s a -> M s a
 tyCheckPat t p body = case p of
     PWild -> body
-    PVar v -> withVar v (mono t) body
+    PVar v -> withVar v t body
     PCon dcon ps -> do
         ct <- asks $ Map.lookup dcon . dataCons
         ct <- case ct of
             Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
-            Just ct -> return ct
-        ct <- instantiate (const True) ct
+            Just ct -> instantiate $ unfreeze ct
         let (tArgs, t0) = tFunArgs ct
         runIdentityT $ t =:= t0
         unless (length ps == length tArgs) $
@@ -290,27 +314,31 @@ tyInfer e = do
     tyCheck ty e
     return ty
 
+niceTVars :: [TVar]
+niceTVars = ["α", "β", "c", "d", "e", "f"]
+
 runM :: M s a -> STBinding s a
 runM act = do
-    alpha <- UVar <$> freeVar
-    beta <- UVar <$> freeVar
-    let polyVars = mempty
+    let tvarSupply = Stream.prefix niceTVars $
+                     fmap (\i -> 'a' : show i) $ Stream.iterate succ 0
+        polyVars = mempty
         dataCons = Map.fromList [ ("Nil", tList alpha)
                                 , ("Cons", alpha ~> (tList alpha ~> tList alpha))
                                 , ("MkPair", alpha ~> (beta ~> tPair alpha beta))
                                 ]
           where
-            t ~> u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
-            tList = UTerm . TApp (UTerm $ TCon "List")
-            tPair t u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Pair") t) u
+            alpha = Fix $ TVar "a"
+            beta = Fix $ TVar "b"
+            t ~> u = Fix $ TApp (Fix $ TApp (Fix $ TCon "Fun") t) u
+            tList = Fix . TApp (Fix $ TCon "List")
+            tPair t u = Fix $ TApp (Fix $ TApp (Fix $ TCon "Pair") t) u
     (x, _, _) <- runRWST (runExceptT $ unM act) PCtx{..} ()
     return $ either (error . show) id x
 
 foo :: M s Doc
 foo = do
     t <- tyInfer e'
-    t <- runIdentityT $ applyBindings t
-    return $ pPrint t
+    generalise [t] $ \[t] -> return $ pPrint t
   where
     e = Lam "f" $ Lam "xs" $ Case (Var "xs")
           [ (PCon "Nil" [], Con "Nil")
@@ -323,5 +351,6 @@ foo = do
                         , (PCon "Cons" [PVar "x", PVar "xs"],
                            Con "Cons" `App` (Var "f" `App` Var "x") `App`
                            (Var "map" `App` Var "f" `App` Var "xs"))
-                        ])]
-           (Con "MkPair" `App` Var "map" `App` Var "map")
+                        ])] $
+           -- Con "MkPair" `App` Var "map" `App` Var "map"
+           Var "map"
