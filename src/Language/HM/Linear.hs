@@ -17,6 +17,7 @@ import Control.Unification.STVar
 import Control.Unification.Types
 
 import Data.Foldable
+import Data.Functor.Fixedpoint
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.RWS hiding (Product)
@@ -132,7 +133,7 @@ instantiate ty = do
 t `tTo` u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
 
 tyCheck :: MTy s -> Term -> M s ()
-tyCheck t e = case e of
+tyCheck t e = case unFix e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         vt <- case vt of
@@ -178,7 +179,7 @@ tyCheckBinds binds body = do
     go [] = body
 
 tyCheckPat :: MTy s -> Pat -> M s a -> M s a
-tyCheckPat t p body = case p of
+tyCheckPat t p body = case unFix p of
     PWild -> body
     PVar v -> withVar v (mono t) body
     PCon dcon ps -> do
@@ -234,15 +235,24 @@ foo' = do
         return $ fromMaybe (error "metavar escaped to top level!") $
           traverse freezePoly pvars
   where
-    bs = [ ("map", Lam "f" $ Lam "xs" $ Case (Var "xs")
-                   [ (PCon "Nil" [], Con "Nil")
-                   , (PCon "Cons" [PVar "x", PVar "xs"],
-                      Con "Cons" `App` (Var "f" `App` Var "x") `App`
-                      (Var "map" `App` Var "f" `App` Var "xs"))
+    lam v = Fix . Lam v
+    case' e = Fix . Case e
+    var = Fix . Var
+    pcon c = Fix . PCon c
+    pvar = Fix . PVar
+    con = Fix . Con
+    app f e = Fix $ App f e
+    infixl 7 `app`
+
+    bs = [ ("map", lam "f" $ lam "xs" $ case' (var "xs")
+                   [ (pcon "Nil" [], con "Nil")
+                   , (pcon "Cons" [pvar "x", pvar "xs"],
+                      con "Cons" `app` (var "f" `app` var "x") `app`
+                      (var "map" `app` var "f" `app` var "xs"))
                    ])
-         , ("foldr", Lam "f" $ Lam "y" $ Lam "xs" $ Case (Var "xs")
-                     [ (PCon "Nil" [], Var "y")
-                     , (PCon "Cons" [PVar "x", PVar "xs"],
-                        Var "f" `App` Var "x" `App` (Var "foldr" `App` Var "f" `App` Var "y" `App` Var "xs"))
+         , ("foldr", lam "f" $ lam "y" $ lam "xs" $ case' (var "xs")
+                     [ (pcon "Nil" [], var "y")
+                     , (pcon "Cons" [pvar "x", pvar "xs"],
+                        var "f" `app` var "x" `app` (var "foldr" `app` var "f" `app` var "y" `app` var "xs"))
                      ])
          ]

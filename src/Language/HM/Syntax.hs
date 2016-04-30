@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies, StandaloneDeriving #-}
 
 module Language.HM.Syntax where
 
@@ -49,48 +50,55 @@ tFunArgs = go
         case go u of (ts, t0) -> (t:ts, t0)
     go t = ([], t)
 
-data Term0 dcon var
+data TermF dcon var a
     = Var var
     | Con dcon
-    | Lam var (Term0 dcon var)
-    | App (Term0 dcon var) (Term0 dcon var)
-    | Case (Term0 dcon var) [(Pat0 dcon var, Term0 dcon var)]
-    | Let [(var, Term0 dcon var)] (Term0 dcon var)
-    deriving Show
+    | Lam var a
+    | App a a
+    | Case a [(PatFam a, a)]
+    | Let [(var, a)] a
+deriving instance (Show dcon, Show var, Show a, Show (PatFam a)) => Show (TermF dcon var a)
 
 infixl 7 `App`
 
-data Pat0 dcon var
+data PatF dcon var a
     = PVar var
     | PWild
-    | PCon dcon [Pat0 dcon var]
+    | PCon dcon [a]
     deriving Show
+
+type family PatFam a
+type instance PatFam (Fix (TermF dcon dvar)) = Fix (PatF dcon dvar)
 
 type Var = String
 type DCon = String
 
-type Term = Term0 DCon Var
-type Pat = Pat0 DCon Var
+type Term0 = TermF DCon Var
+type Pat0 = PatF DCon Var
+
+type Term = Fix Term0
+type Pat = Fix Pat0
 
 freeVarsOfTerm :: Term -> Set Var
 freeVarsOfTerm = execWriter . go
   where
-    go (Var v) = tell $ Set.singleton v
-    go (Lam v e) = censor (Set.delete v) $ go e
-    go Con{} = return ()
-    go (App f e) = go f >> go e
-    go (Case e as) = go e >> traverse_ alt as
-    go (Let bs e) = do
-        let bounds = Set.fromList $ map fst bs
-        censor (Set.\\ bounds) $ do
-            traverse_ (go . snd) bs
-            go e
+    go e = case unFix e of
+        Var v -> tell $ Set.singleton v
+        Lam v e -> censor (Set.delete v) $ go e
+        Con{} -> return ()
+        App f e -> go f >> go e
+        Case e as -> go e >> traverse_ alt as
+        Let bs e -> censor (Set.\\ bound) $ traverse_ go (e:defs)
+          where
+            (vars, defs) = unzip bs
+            bound = Set.fromList vars
 
     alt (p, e) = censor (Set.\\ freeVarsOfPat p) $ go e
 
 freeVarsOfPat :: Pat -> Set Var
 freeVarsOfPat = execWriter . go
   where
-    go PWild = return ()
-    go (PVar v) = tell $ Set.singleton v
-    go (PCon _ ps) = traverse_ go ps
+    go p = case unFix p of
+        PWild -> return ()
+        PVar v -> tell $ Set.singleton v
+        PCon _ ps -> traverse_ go ps
