@@ -150,23 +150,24 @@ tyInfer e = case unFix e of
         -- t0 <- tyInfer e
         -- forM_ as $ \(pat, e) -> do
         --     tyCheckPat t0 pat $ tyCheck t e
-    Let binds e -> fst <$> (tyCheckBinds binds $ (,()) <$> tyInfer e)
+    Let binds e -> tyCheckBinds binds $ \mc0 -> do
+        mc :- e <- tyInfer e
+        return $ Map.union mc mc0 :- e
 
-tyCheckBinds :: [(Var, Term)] -> M s (MTyping s, a) -> M s (MTyping s, a)
+tyCheckBinds :: [(Var, Term)] -> (Map Var (MTy s) -> M s a) -> M s a
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
-    go (map flattenSCC $ stronglyConnComp g)
+    go mempty (map flattenSCC $ stronglyConnComp g)
   where
-    go (bs:bss) = do
+    go mc0 (bs:bss) = do
         pc <- withMonoVars (map fst bs) $ do
             tps <- zip (map fst bs) <$> traverse (tyInfer . snd) bs
             let mcs = [Map.insert v t mc | (v, mc :- t) <- tps]
             unifyTypings mcs
             return $ Map.fromList tps
-        (mc :- t, x) <- withPolyVars pc $ go bss
         let mcs = [mc | (mc :- t) <- Map.elems pc]
-        return (Map.unions (mc:mcs) :- t, x)
-    go [] = body
+        withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
+    go mc0 [] = body mc0
 
 runM :: Map DCon PolyTy -> M s a -> STBinding s a
 runM dataCons act = do
