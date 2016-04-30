@@ -4,9 +4,9 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards, TupleSections #-}
 
-module Language.HM.Linear where
+module Language.HM.Compositional where
 
 import Language.HM.Syntax
 import Language.HM.Remap
@@ -35,6 +35,13 @@ import Data.Graph
 import Data.Maybe
 import Data.Function
 
+import Debug.Trace
+
+data Typing0 var ty = Map var ty :- ty
+
+type Typing = Typing0 Var Ty
+type MTyping s = Typing0 Var (MTy s)
+
 data Err0 t v = UErr (UFailure t v)
               | Err String
 
@@ -46,18 +53,23 @@ instance Fallible t v (Err0 t v) where
     occursFailure v t = UErr $ occursFailure v t
     mismatchFailure t u = UErr $ mismatchFailure t u
 
-data Ctx s = Ctx{ polyVars :: Map Var (MPolyTy s)
+data Ctx s = Ctx{ polyVars :: Map Var (Maybe (MTyping s))
                 , dataCons :: Map DCon PolyTy
                 }
 
 newtype M s a = M{ unM :: ExceptT (Err s) (RWST (Ctx s) () Int (STBinding s)) a }
               deriving (Functor, Applicative, Monad, MonadReader (Ctx s), MonadState Int)
 
-withVar :: Var -> MPolyTy s -> M s a -> M s a
-withVar v ty = local $ \pc -> pc{ polyVars = Map.insert v ty $ polyVars pc }
+withMonoVar :: Var -> M s a -> M s a
+withMonoVar v = withMonoVars [v]
 
-withVars :: Map Var (MPolyTy s) -> M s a -> M s a
-withVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
+withMonoVars :: [Var] -> M s a -> M s a
+withMonoVars vs = local $ \pc -> pc{ polyVars = Map.union newVars $ polyVars pc }
+  where
+    newVars = Map.fromList [(v, Nothing) | v <- vs]
+
+withPolyVars :: Map Var (MTyping s) -> M s a -> M s a
+withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union (Just <$> vtys) $ polyVars pc }
 
 instance BindingMonad Ty0 (MVar s) (M s) where
     lookupVar = M . lift . lift . lookupVar
@@ -65,6 +77,7 @@ instance BindingMonad Ty0 (MVar s) (M s) where
     newVar = M . lift . lift . newVar
     bindVar v = M . lift . lift . bindVar v
 
+{-
 instance PolyBindingMonad Ty0 (MVar s) (Err s) (M s) where
     freshTVar = get <* modify succ
 
@@ -72,80 +85,88 @@ instance PolyBindingMonad Ty0 (MVar s) (Err s) (M s) where
         tysInScope <- asks $ Map.elems . polyVars
         let tvsInScope = polyMetaVars tysInScope
         return $ (`Set.notMember` tvsInScope)
+-}
+
+-- unifyTyping :: [Map Var (MTy s)] -> [MTy s] -> M s (MTyping s)
+-- unifyTyping mcs ts = do
+--     traverse_ unifyMany $ zipMaps mcs
+--     unifyMany ts
+--     -- mc <- runIdentityT $ applyBindingsAll $ Map.unions mcs
+--     -- t <- runIdentityT $ applyBindings t
+--     let mc = Map.unions mcs
+--     traceShow (mc, t) $ return ()
+--     return $ mc :- t
+
+unifyTypings :: [Map Var (MTy s)] -> M s (Map Var (MTy s))
+unifyTypings mcs = do
+    traverse_ unifyMany $ zipMaps mcs
+    -- mc <- runIdentityT $ applyBindingsAll $ Map.unions mcs
+    return $ Map.unions mcs
+
+unifyMany :: [MTy s] -> M s ()
+unifyMany [t] = return ()
+unifyMany (t:ts) = void $ runIdentityT $ foldM (=:=) t ts
+
+zipMaps :: (Ord k) => [Map k a] -> Map k [a]
+zipMaps [] = mempty
+zipMaps (m:ms) = foldr (Map.intersectionWith (:)) (pure <$> m) ms
+
+instantiateTyping :: MTyping s -> M s (MTyping s)
+instantiateTyping = error "instantiateTyping"
 
 instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
 
-tyCheck :: MTy s -> Term -> M s ()
-tyCheck t e = case unFix e of
+tyInfer :: Term -> M s (MTyping s)
+tyInfer e = case unFix e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
-        vt <- case vt of
+        case vt of
+            Just (Just tp) -> instantiateTyping tp
+            Just Nothing -> do
+                tv <- UVar <$> freeVar
+                return $ Map.singleton v tv :- tv
             Nothing -> throwError $ Err $ unwords ["Not in scope:", show v]
-            Just t -> instantiate t
-        runIdentityT $ vt =:= t
-        return ()
     Con dcon -> do
         ct <- asks $ Map.lookup dcon . dataCons
         ct <- case ct of
             Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
             Just ct -> instantiate $ thaw ct
-        runIdentityT $ ct =:= t
-        return ()
+        return $ mempty :- ct
     Lam v e -> do
-        t0 <- UVar <$> freeVar
-        withVar v (mono t0) $ do
-            u <- tyInfer e
-            runIdentityT $ t0 ~> u =:= t
-        return ()
+        mc :- t <- withMonoVar v $ tyInfer e
+        u <- maybe (UVar <$> freeVar) return $ Map.lookup v mc
+        return $ Map.delete v mc :- (u ~> t)
     App f e -> do
-        t1 <- tyInfer f
-        t2 <- tyInfer e
-        runIdentityT $ t1 =:= t2 ~> t
-        return ()
+        mc1 :- t <- tyInfer f
+        mc2 :- u <- tyInfer e
+        a <- UVar <$> freeVar
+        mc <- unifyTypings [mc1, mc2]
+        runIdentityT $ (u ~> a) =:= t
+        return $ mc :- a
     Case e as -> do
-        t0 <- tyInfer e
-        forM_ as $ \(pat, e) -> do
-            tyCheckPat t0 pat $ tyCheck t e
-    Let binds e -> tyCheckBinds binds $ tyCheck t e
+        undefined
+        -- t0 <- tyInfer e
+        -- forM_ as $ \(pat, e) -> do
+        --     tyCheckPat t0 pat $ tyCheck t e
+    Let binds e -> fst <$> (tyCheckBinds binds $ (,()) <$> tyInfer e)
 
-tyCheckBinds :: [(Var, Term)] -> M s a -> M s a
+tyCheckBinds :: [(Var, Term)] -> M s (MTyping s, a) -> M s (MTyping s, a)
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
     go (map flattenSCC $ stronglyConnComp g)
   where
     go (bs:bss) = do
-        tvs <- traverse (const $ UVar <$> freeVar) bs
-        withVars (Map.fromList $ zip (map fst bs) (map mono tvs)) $
-          zipWithM_ tyCheck tvs (map snd bs)
-        ts <- generalise tvs
-        withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
+        pc <- withMonoVars (map fst bs) $ do
+            tps <- zip (map fst bs) <$> traverse (tyInfer . snd) bs
+            let mcs = [Map.insert v t mc | (v, mc :- t) <- tps]
+            unifyTypings mcs
+            return $ Map.fromList tps
+        (mc :- t, x) <- withPolyVars pc $ go bss
+        let mcs = [mc | (mc :- t) <- Map.elems pc]
+        return (Map.unions (mc:mcs) :- t, x)
     go [] = body
-
-tyCheckPat :: MTy s -> Pat -> M s a -> M s a
-tyCheckPat t p body = case unFix p of
-    PWild -> body
-    PVar v -> withVar v (mono t) body
-    PCon dcon ps -> do
-        ct <- asks $ Map.lookup dcon . dataCons
-        ct <- case ct of
-            Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
-            Just ct -> instantiate $ thaw ct
-        let (tArgs, t0) = tFunArgs ct
-        runIdentityT $ t =:= t0
-        unless (length ps == length tArgs) $
-          throwError $ Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs]
-        go (zip tArgs ps)
-      where
-        go ((t, p):tps) = tyCheckPat t p $ go tps
-        go [] = body
-
-tyInfer :: Term -> M s (MTy s)
-tyInfer e = do
-    ty <- UVar <$> freeVar
-    tyCheck ty e
-    return ty
 
 runM :: Map DCon PolyTy -> M s a -> STBinding s a
 runM dataCons act = do
