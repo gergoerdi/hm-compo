@@ -9,8 +9,8 @@
 module Language.HM.Linear where
 
 import Language.HM.Syntax
-import Language.HM.Pretty
 import Language.HM.Remap
+import Language.HM.Meta
 
 import Control.Unification
 import Control.Unification.STVar
@@ -33,16 +33,10 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Graph
 import Data.Maybe
-import Text.PrettyPrint
-import Text.PrettyPrint.HughesPJClass
 import Data.Function
 
-type MVar s = STVar s Ty0
-type MTy s = UTerm Ty0 (MVar s)
-type MPolyTy s = UTerm Ty0 (Either TVar (MVar s))
-
-instance Ord (STVar s t) where
-    compare = compare `on` getVarID
+-- instance Ord (STVar s t) where
+--     compare = compare `on` getVarID
 
 data Err0 t v = UErr (UFailure t v)
               | Err String
@@ -75,34 +69,14 @@ instance BindingMonad Ty0 (MVar s) (M s) where
     newVar = M . lift . lift . newVar
     bindVar v = M . lift . lift . bindVar v
 
+-- instance PolyBindingMonad Ty0 (MVar s) (M s) where
+--     freshTVar = get <* modify succ
+freshTVar :: M s TVar
+freshTVar = get <* modify succ
+
 instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
-
-mono :: MTy s -> MPolyTy s
-mono = fmap Right
-
-thaw :: PolyTy -> MPolyTy s
-thaw = fmap Left
-
-freezePoly :: MPolyTy s -> Maybe PolyTy
-freezePoly = walk
-  where
-    walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
-    walk (UTerm (TCon tcon)) = UTerm <$> pure (TCon tcon)
-    walk (UVar (Left a)) = UVar <$> pure a
-    walk (UVar (Right v)) = mzero
-
-fresh :: M s TVar
-fresh = get <* modify succ
-
-polyMetaVars :: [MPolyTy s] -> Set (MVar s)
-polyMetaVars = execWriter . traverse_ go
-  where
-    go (UTerm (TApp t u)) = go t >> go u
-    go (UTerm (TCon _)) = pure ()
-    go (UVar (Left a)) = pure ()
-    go (UVar (Right v)) = tell $ Set.singleton v
 
 generalise :: forall s a t. (Traversable t) => t (MTy s) -> M s (t (MPolyTy s))
 generalise tys = do
@@ -110,35 +84,13 @@ generalise tys = do
     tysInScope <- asks $ Map.elems . polyVars
     let tvsInScope = polyMetaVars tysInScope
     let Pair (Constant mvars) fill = traverse (walk (`Set.notMember` tvsInScope)) tys
-    runReader fill <$> traverse (const fresh) (Map.fromSet (const ()) mvars)
+    runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
   where
     walk :: (MVar s -> Bool) -> MTy s -> Remap (MVar s) TVar (MPolyTy s)
     walk free (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk free t <*> walk free u)
     walk free (UTerm (TCon con)) = UTerm <$> pure (TCon con)
     walk free (UVar v) | free v = UVar <$> (Left <$> remap v)
                        | otherwise = UVar <$> pure (Right v)
-
-instantiateN :: forall m s t. (BindingMonad Ty0 (MVar s) m, Traversable t)
-             => t (MPolyTy s) -> m (t (MTy s))
-instantiateN ty = do
-    let Pair (Constant tvars) fill = traverse walk ty
-    tvars <- traverse (const freeVar) $ Map.fromSet (const ()) tvars
-    return $ runReader fill tvars
-  where
-    walk :: MPolyTy s -> Remap TVar (MVar s) (MTy s)
-    walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
-    walk (UTerm (TCon con)) = UTerm <$> pure (TCon con)
-    walk (UVar (Left a)) = UVar <$> remap a
-    walk (UVar (Right v)) = UVar <$> pure v
-
-instantiate :: forall m s. (BindingMonad Ty0 (MVar s) m)
-             => MPolyTy s -> m (MTy s)
-instantiate = fmap runIdentity . instantiateN . Identity
-
-(~>) :: UTerm Ty0 v -> UTerm Ty0 v -> UTerm Ty0 v
-t ~> u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
-
-infixr 7 ~>
 
 tyCheck :: MTy s -> Term -> M s ()
 tyCheck t e = case unFix e of
@@ -210,56 +162,8 @@ tyInfer e = do
     tyCheck ty e
     return ty
 
-runM :: M s a -> STBinding s a
-runM act = do
+runM :: Map DCon PolyTy -> M s a -> STBinding s a
+runM dataCons act = do
     let polyVars = mempty
-        dataCons = Map.fromList [ ("Nil", tList alpha)
-                                , ("Cons", alpha ~> tList alpha ~> tList alpha)
-                                , ("MkPair", alpha ~> beta ~> tPair alpha beta)
-                                ]
-          where
-            alpha = UVar (-1)
-            beta = UVar (-2)
-            tList = UTerm . TApp (UTerm $ TCon "List")
-            tPair t u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Pair") t) u
     (x, _, _) <- runRWST (runExceptT $ unM act) PCtx{..} 0
     return $ either (error . show) id x
-
-dcolon :: Doc
-dcolon = text "::"
-
-foo :: M s Doc
-foo = do
-    pvars <- foo'
-    return $ vcat [ text name <+> dcolon <+> pPrint t
-                  | (name, t) <- Map.toList pvars
-                  ]
-
-foo' :: M s (Map Var PolyTy)
-foo' = do
-    tyCheckBinds bs $ do
-        pvars <- asks polyVars
-        return $ fromMaybe (error "metavar escaped to top level!") $
-          traverse freezePoly pvars
-  where
-    lam v = Fix . Lam v
-    case' e = Fix . Case e
-    var = Fix . Var
-    pcon c = Fix . PCon c
-    pvar = Fix . PVar
-    con = Fix . Con
-    app f e = Fix $ App f e
-    infixl 7 `app`
-
-    bs = [ ("map", lam "f" $ lam "xs" $ case' (var "xs")
-                   [ (pcon "Nil" [], con "Nil")
-                   , (pcon "Cons" [pvar "x", pvar "xs"],
-                      con "Cons" `app` (var "f" `app` var "x") `app`
-                      (var "map" `app` var "f" `app` var "xs"))
-                   ])
-         , ("foldr", lam "f" $ lam "y" $ lam "xs" $ case' (var "xs")
-                     [ (pcon "Nil" [], var "y")
-                     , (pcon "Cons" [pvar "x", pvar "xs"],
-                        var "f" `app` var "x" `app` (var "foldr" `app` var "f" `app` var "y" `app` var "xs"))
-                     ])
-         ]
