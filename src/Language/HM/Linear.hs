@@ -9,6 +9,8 @@
 module Language.HM.Linear where
 
 import Language.HM.Syntax
+import Language.HM.Pretty
+import Language.HM.Remap
 
 import Control.Unification
 import Control.Unification.STVar
@@ -74,11 +76,6 @@ instance BindingMonad Ty0 (MVar s) (M s) where
 instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
-
-type Remap from to = Staged (Set from) (Map from to)
-
-remap :: (Ord from) => from -> Remap from to to
-remap x = Pair (Constant (Set.singleton x)) (asks $ fromJust . Map.lookup x)
 
 mono :: MTy s -> MPolyTy s
 mono = fmap Right

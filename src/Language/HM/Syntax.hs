@@ -3,27 +3,16 @@
 
 module Language.HM.Syntax where
 
+import Language.HM.Remap
+
 import Control.Unification
 
 import Data.Foldable
 import Data.Traversable
 import Data.Functor.Fixedpoint
-import Control.Monad.Reader
-import Control.Monad.Writer hiding (Product)
-import Data.Functor.Product
-import Data.Functor.Constant
+import Control.Monad.Writer
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Maybe
-import Text.PrettyPrint
-import Text.PrettyPrint.HughesPJClass
-import Data.Stream (Stream(..))
-import qualified Data.Stream as Stream
-import Data.List (nub)
-
-type Staged w r = Product (Constant w) (Reader r)
 
 data TyF tcon a
     = TApp a a
@@ -46,15 +35,8 @@ type Ty = Fix Ty0
 type TVar = Int
 type PolyTy = UTerm Ty0 TVar
 
-tApps :: Ty -> (Ty, [Ty])
+tApps :: UTerm (TyF tcon) v -> (UTerm (TyF tcon) v, [UTerm (TyF tcon) v])
 tApps t = case go t of
-    (t, ts) -> (t, reverse ts)
-  where
-    go (Fix (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
-    go t = (t, [])
-
-tApps' :: UTerm (TyF tcon) v -> (UTerm (TyF tcon) v, [UTerm (TyF tcon) v])
-tApps' t = case go t of
     (t, ts) -> (t, reverse ts)
   where
     go (UTerm (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
@@ -66,43 +48,6 @@ tFunArgs = go
     go (UTerm (TApp (UTerm (TApp (UTerm (TCon "Fun")) t)) u)) =
         case go u of (ts, t0) -> (t:ts, t0)
     go t = ([], t)
-
-instance Pretty Ty where
-    pPrintPrec level = go
-      where
-        go p t0@(Fix t) = case t of
-            TApp{} -> case tApps t0 of
-                (Fix (TCon "Fun"), [t, u]) -> par 1 $ go 1 t <+> text "->" <+> go 0 u
-                (tcon, []) -> go 0 tcon
-                (tcon, targs) -> par 2 $ go 0 tcon <+> hsep (map (go 2) targs)
-            TCon tcon -> text tcon
-          where
-            par i | p >= i = parens
-                  | otherwise = id
-
-niceTVars :: Stream String
-niceTVars = Stream.prefix ["α", "β", "c", "d", "e", "f"] $
-            fmap (\i -> 'a' : show i) $ Stream.iterate succ 0
-
-instance Pretty PolyTy where
-    pPrintPrec level prec t = case go prec t of
-        Pair (Constant tvars) fill ->
-            runReader fill $ Map.fromList $ zip (nub tvars) (Stream.toList niceTVars)
-      where
-        go :: Rational -> PolyTy -> Staged [Int] (Map Int String) Doc
-        go p t0@(UTerm t) = case t of
-            TApp{} -> case tApps' t0 of
-                (UTerm (TCon "Fun"), [t, u]) ->
-                    (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
-                (tcon, []) -> go 0 tcon
-                (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
-            TCon tcon -> pure $ text tcon
-          where
-            par i | p >= i = parens
-                  | otherwise = id
-        go p (UVar a) = text <$> remap a
-          where
-            remap x = Pair (Constant [x]) (asks $ fromJust . Map.lookup x)
 
 data Term0 dcon var
     = Var var
