@@ -54,7 +54,7 @@ instance (Eq tcon) => Unifiable (TyF tcon) where
     zipMatch _ _ = mzero
 
 type TCon = String
-type TVar = String
+type TVar = Int
 type Ty0 = TyF TCon
 
 type Ty = Fix Ty0
@@ -111,28 +111,16 @@ instance Pretty Ty where
             par i | p >= i = parens
                   | otherwise = id
 
-instance Pretty (MTy s) where
-    pPrintPrec level prec t = case go prec t of
-        Pair (Constant tvars) fill -> runReader fill $ Map.fromAscList $ zip (Set.toAscList tvars) [1..]
-      where
-        go :: Rational -> MTy s -> Remap Int Int Doc
-        go p t0@(UTerm t) = case t of
-            TApp{} -> case tApps' t0 of
-                (UTerm (TCon "Fun"), [t, u]) ->
-                    (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
-                (tcon, []) -> go 0 tcon
-                (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
-            TCon tcon -> pure $ text tcon
-          where
-            par i | p >= i = parens
-                  | otherwise = id
-        go p (UVar v) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
+niceTVars :: Stream String
+niceTVars = Stream.prefix ["α", "β", "c", "d", "e", "f"] $
+            fmap (\i -> 'a' : show i) $ Stream.iterate succ 0
 
-instance Pretty (MPolyTy s) where
+instance Pretty PolyTy where
     pPrintPrec level prec t = case go prec t of
-        Pair (Constant tvars) fill -> runReader fill $ Map.fromAscList $ zip (Set.toAscList tvars) [1..]
+        Pair (Constant tvars) fill ->
+            runReader fill $ Map.fromList $ zip (nub tvars) (Stream.toList niceTVars)
       where
-        go :: Rational -> MPolyTy s -> Remap Int Int Doc
+        go :: Rational -> PolyTy -> Staged [Int] (Map Int String) Doc
         go p t0@(UTerm t) = case t of
             TApp{} -> case tApps' t0 of
                 (UTerm (TCon "Fun"), [t, u]) ->
@@ -143,8 +131,44 @@ instance Pretty (MPolyTy s) where
           where
             par i | p >= i = parens
                   | otherwise = id
-        go p (UVar (Left a)) = pure $ text a
-        go p (UVar (Right v)) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
+        go p (UVar a) = text <$> remap a
+          where
+            remap x = Pair (Constant [x]) (asks $ fromJust . Map.lookup x)
+
+-- instance Pretty (MTy s) where
+--     pPrintPrec level prec t = case go prec t of
+--         Pair (Constant tvars) fill -> runReader fill $ Map.fromAscList $ zip (Set.toAscList tvars) [1..]
+--       where
+--         go :: Rational -> MTy s -> Remap Int Int Doc
+--         go p t0@(UTerm t) = case t of
+--             TApp{} -> case tApps' t0 of
+--                 (UTerm (TCon "Fun"), [t, u]) ->
+--                     (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
+--                 (tcon, []) -> go 0 tcon
+--                 (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
+--             TCon tcon -> pure $ text tcon
+--           where
+--             par i | p >= i = parens
+--                   | otherwise = id
+--         go p (UVar v) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
+
+-- instance Pretty (MPolyTy s) where
+--     pPrintPrec level prec t = case go prec t of
+--         Pair (Constant tvars) fill -> runReader fill $ Map.fromAscList $ zip (Set.toAscList tvars) [1..]
+--       where
+--         go :: Rational -> MPolyTy s -> Remap Int Int Doc
+--         go p t0@(UTerm t) = case t of
+--             TApp{} -> case tApps' t0 of
+--                 (UTerm (TCon "Fun"), [t, u]) ->
+--                     (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
+--                 (tcon, []) -> go 0 tcon
+--                 (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
+--             TCon tcon -> pure $ text tcon
+--           where
+--             par i | p >= i = parens
+--                   | otherwise = id
+--         go p (UVar (Left a)) = pure $ text a
+--         go p (UVar (Right v)) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
 
 data Term0 dcon var
     = Var var
@@ -205,13 +229,20 @@ mono = fmap Right
 thaw :: PolyTy -> MPolyTy s
 thaw = fmap Left
 
+freezePoly :: MPolyTy s -> Maybe PolyTy
+freezePoly = walk
+  where
+--     walk :: (v -> Maybe PolyTy) -> UTerm Ty0 v -> Maybe PolyTy
+    walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
+    walk (UTerm (TCon tcon)) = UTerm <$> pure (TCon tcon)
+    walk (UVar (Left a)) = UVar <$> pure a
+    walk (UVar (Right v)) = mzero
+
 -- generalise :: forall s a. [MTy s] -> ([MTy s] -> M s a) -> M s a
 -- generalise tys body = do
 
 fresh :: M s TVar
-fresh = do
-    i <- get <* modify succ
-    return $ 'a' : show i
+fresh = get <* modify succ
 
 polyMetaVars :: [MPolyTy s] -> Set (MVar s)
 polyMetaVars = execWriter . traverse_ go
@@ -224,7 +255,6 @@ polyMetaVars = execWriter . traverse_ go
 generalise :: forall s a. [MTy s] -> M s [MPolyTy s]
 generalise tys = do
     tys <- runIdentityT $ applyBindingsAll tys
-
     tysInScope <- asks $ Map.elems . polyVars
     -- tvsInScope <- undefined -- fmap (Set.fromList . concat . map lefts) $ traverse getFreeVars tysInScope
     let tvsInScope = polyMetaVars tysInScope
@@ -282,17 +312,20 @@ tyCheck t e = case e of
         t0 <- tyInfer e
         forM_ as $ \(pat, e) -> do
             tyCheckPat t0 pat $ tyCheck t e
-    Let binds e -> do
-        let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
-        go (map flattenSCC $ stronglyConnComp g)
-      where
-        go (bs:bss) = do
-            tvs <- traverse (const $ UVar <$> freeVar) bs
-            withVars (Map.fromList $ zip (map fst bs) (map mono tvs)) $
-              zipWithM_ tyCheck tvs (map snd bs)
-            ts <- generalise tvs
-            withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
-        go [] = tyCheck t e
+    Let binds e -> tyCheckBinds binds $ tyCheck t e
+
+tyCheckBinds :: [(Var, Term)] -> M s a -> M s a
+tyCheckBinds binds body = do
+    let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
+    go (map flattenSCC $ stronglyConnComp g)
+  where
+    go (bs:bss) = do
+        tvs <- traverse (const $ UVar <$> freeVar) bs
+        withVars (Map.fromList $ zip (map fst bs) (map mono tvs)) $
+          zipWithM_ tyCheck tvs (map snd bs)
+        ts <- generalise tvs
+        withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
+    go [] = body
 
 freeVarsOfTerm :: Term -> Set Var
 freeVarsOfTerm = execWriter . go
@@ -329,7 +362,7 @@ tyCheckPat t p body = case p of
         let (tArgs, t0) = tFunArgs ct
         runIdentityT $ t =:= t0
         unless (length ps == length tArgs) $
-          throwError $ Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs, show $ pPrint ct]
+          throwError $ Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs]
         go (zip tArgs ps)
       where
         go ((t, p):tps) = tyCheckPat t p $ go tps
@@ -341,44 +374,48 @@ tyInfer e = do
     tyCheck ty e
     return ty
 
-niceTVars :: [TVar]
-niceTVars = ["α", "β", "c", "d", "e", "f"]
-
 runM :: M s a -> STBinding s a
 runM act = do
-    let tvarSupply = Stream.prefix niceTVars $
-                     fmap (\i -> 'a' : show i) $ Stream.iterate succ 0
-        polyVars = mempty
+    let polyVars = mempty
         dataCons = Map.fromList [ ("Nil", tList alpha)
                                 , ("Cons", alpha ~> (tList alpha ~> tList alpha))
                                 , ("MkPair", alpha ~> (beta ~> tPair alpha beta))
                                 ]
           where
-            alpha = UVar "a"
-            beta = UVar "b"
+            alpha = UVar (-1)
+            beta = UVar (-2)
             t ~> u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
             tList = UTerm . TApp (UTerm $ TCon "List")
             tPair t u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Pair") t) u
     (x, _, _) <- runRWST (runExceptT $ unM act) PCtx{..} 0
     return $ either (error . show) id x
 
+dcolon :: Doc
+dcolon = text "::"
+
 foo :: M s Doc
 foo = do
-    t <- tyInfer e'
-    [t] <- generalise [t]
-    return $ pPrint t
-  where
-    e = Lam "f" $ Lam "xs" $ Case (Var "xs")
-          [ (PCon "Nil" [], Con "Nil")
-          , (PCon "Cons" [PVar "x", PVar "xs"],
-             (Con "Cons" `App` (Var "f" `App` Var "x")) `App` (Var "xs"))
-          ]
+    pvars <- foo'
+    return $ vcat [ text name <+> dcolon <+> pPrint t
+                  | (name, t) <- Map.toList pvars
+                  ]
 
-    e' = Let [("map", Lam "f" $ Lam "xs" $ Case (Var "xs")
-                        [ (PCon "Nil" [], Con "Nil")
-                        , (PCon "Cons" [PVar "x", PVar "xs"],
-                           Con "Cons" `App` (Var "f" `App` Var "x") `App`
-                           (Var "map" `App` Var "f" `App` Var "xs"))
-                        ])] $
-           -- Con "MkPair" `App` Var "map" `App` Var "map"
-           Var "map"
+foo' :: M s (Map Var PolyTy)
+foo' = do
+    tyCheckBinds bs $ do
+        pvars <- asks polyVars
+        return $ fromMaybe (error "metavar escaped to top level!") $
+          traverse freezePoly pvars
+  where
+    bs = [ ("map", Lam "f" $ Lam "xs" $ Case (Var "xs")
+                   [ (PCon "Nil" [], Con "Nil")
+                   , (PCon "Cons" [PVar "x", PVar "xs"],
+                      Con "Cons" `App` (Var "f" `App` Var "x") `App`
+                      (Var "map" `App` Var "f" `App` Var "xs"))
+                   ])
+         , ("foldr", Lam "f" $ Lam "y" $ Lam "xs" $ Case (Var "xs")
+                     [ (PCon "Nil" [], Var "y")
+                     , (PCon "Cons" [PVar "x", PVar "xs"],
+                        Var "f" `App` Var "x" `App` (Var "foldr" `App` Var "f" `App` Var "y" `App` Var "xs"))
+                     ])
+         ]
