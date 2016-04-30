@@ -1,26 +1,25 @@
 {-# LANGUAGE Rank2Types, ScopedTypeVariables #-}
-{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
-{-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards #-}
 
+module Language.HM.Linear where
+
+import Language.HM.Syntax
+
 import Control.Unification
 import Control.Unification.STVar
 import Control.Unification.Types
 
 import Data.Foldable
-import Data.Traversable
-import Data.Functor.Fixedpoint
 import Control.Monad
 import Control.Monad.Except
-import Data.Bifunctor
 import Control.Monad.RWS hiding (Product)
 import Control.Monad.Reader
 import Control.Monad.Writer hiding (Product)
-import Control.Monad.State
 import Control.Monad.Trans.Identity
 import Data.Functor.Product
 import Data.Functor.Constant
@@ -33,35 +32,10 @@ import Data.Maybe
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Function
-import Data.Stream (Stream(..))
-import qualified Data.Stream as Stream
-import Data.List (nub)
-import Data.Either (lefts)
 
-import Debug.Trace
-
-data TyF tcon a
-    = TApp a a
-    | TCon tcon
-    deriving (Eq, Show, Functor, Foldable, Traversable)
-
-instance (Eq tcon) => Unifiable (TyF tcon) where
-    zipMatch (TCon dc1) (TCon dc2) = do
-        guard $ dc1 == dc2
-        return $ TCon dc1
-    zipMatch (t1 `TApp` t2) (t1' `TApp` t2') = do
-        return $ Right (t1, t1') `TApp` Right (t2, t2')
-    zipMatch _ _ = mzero
-
-type TCon = String
-type TVar = Int
-type Ty0 = TyF TCon
-
-type Ty = Fix Ty0
 type MVar s = STVar s Ty0
 type MTy s = UTerm Ty0 (MVar s)
 type MPolyTy s = UTerm Ty0 (Either TVar (MVar s))
-type PolyTy = UTerm Ty0 TVar
 
 instance Ord (STVar s t) where
     compare = compare `on` getVarID
@@ -76,122 +50,6 @@ type Err s = Err0 Ty0 (MVar s)
 instance Fallible t v (Err0 t v) where
     occursFailure v t = UErr $ occursFailure v t
     mismatchFailure t u = UErr $ mismatchFailure t u
-
-tApps :: Ty -> (Ty, [Ty])
-tApps t = case go t of
-    (t, ts) -> (t, reverse ts)
-  where
-    go (Fix (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
-    go t = (t, [])
-
--- tApps' :: MTy s -> (MTy s, [MTy s])
-tApps' t = case go t of
-    (t, ts) -> (t, reverse ts)
-  where
-    go (UTerm (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
-    go t = (t, [])
-
-tFunArgs :: MTy s -> ([MTy s], MTy s)
-tFunArgs = go
-  where
-    go (UTerm (TApp (UTerm (TApp (UTerm (TCon "Fun")) t)) u)) =
-        case go u of (ts, t0) -> (t:ts, t0)
-    go t = ([], t)
-
-instance Pretty Ty where
-    pPrintPrec level = go
-      where
-        go p t0@(Fix t) = case t of
-            TApp{} -> case tApps t0 of
-                (Fix (TCon "Fun"), [t, u]) -> par 1 $ go 1 t <+> text "->" <+> go 0 u
-                (tcon, []) -> go 0 tcon
-                (tcon, targs) -> par 2 $ go 0 tcon <+> hsep (map (go 2) targs)
-            TCon tcon -> text tcon
-          where
-            par i | p >= i = parens
-                  | otherwise = id
-
-niceTVars :: Stream String
-niceTVars = Stream.prefix ["α", "β", "c", "d", "e", "f"] $
-            fmap (\i -> 'a' : show i) $ Stream.iterate succ 0
-
-instance Pretty PolyTy where
-    pPrintPrec level prec t = case go prec t of
-        Pair (Constant tvars) fill ->
-            runReader fill $ Map.fromList $ zip (nub tvars) (Stream.toList niceTVars)
-      where
-        go :: Rational -> PolyTy -> Staged [Int] (Map Int String) Doc
-        go p t0@(UTerm t) = case t of
-            TApp{} -> case tApps' t0 of
-                (UTerm (TCon "Fun"), [t, u]) ->
-                    (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
-                (tcon, []) -> go 0 tcon
-                (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
-            TCon tcon -> pure $ text tcon
-          where
-            par i | p >= i = parens
-                  | otherwise = id
-        go p (UVar a) = text <$> remap a
-          where
-            remap x = Pair (Constant [x]) (asks $ fromJust . Map.lookup x)
-
--- instance Pretty (MTy s) where
---     pPrintPrec level prec t = case go prec t of
---         Pair (Constant tvars) fill -> runReader fill $ Map.fromAscList $ zip (Set.toAscList tvars) [1..]
---       where
---         go :: Rational -> MTy s -> Remap Int Int Doc
---         go p t0@(UTerm t) = case t of
---             TApp{} -> case tApps' t0 of
---                 (UTerm (TCon "Fun"), [t, u]) ->
---                     (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
---                 (tcon, []) -> go 0 tcon
---                 (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
---             TCon tcon -> pure $ text tcon
---           where
---             par i | p >= i = parens
---                   | otherwise = id
---         go p (UVar v) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
-
--- instance Pretty (MPolyTy s) where
---     pPrintPrec level prec t = case go prec t of
---         Pair (Constant tvars) fill -> runReader fill $ Map.fromAscList $ zip (Set.toAscList tvars) [1..]
---       where
---         go :: Rational -> MPolyTy s -> Remap Int Int Doc
---         go p t0@(UTerm t) = case t of
---             TApp{} -> case tApps' t0 of
---                 (UTerm (TCon "Fun"), [t, u]) ->
---                     (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
---                 (tcon, []) -> go 0 tcon
---                 (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
---             TCon tcon -> pure $ text tcon
---           where
---             par i | p >= i = parens
---                   | otherwise = id
---         go p (UVar (Left a)) = pure $ text a
---         go p (UVar (Right v)) = (\i -> text $ 't' : show i) <$> remap (getVarID v)
-
-data Term0 dcon var
-    = Var var
-    | Con dcon
-    | Lam var (Term0 dcon var)
-    | App (Term0 dcon var) (Term0 dcon var)
-    | Case (Term0 dcon var) [(Pat0 dcon var, Term0 dcon var)]
-    | Let [(var, Term0 dcon var)] (Term0 dcon var)
-    deriving Show
-
-infixl 7 `App`
-
-data Pat0 dcon var
-    = PVar var
-    | PWild
-    | PCon dcon [Pat0 dcon var]
-    deriving Show
-
-type Var = String
-type DCon = String
-
-type Term = Term0 DCon Var
-type Pat = Pat0 DCon Var
 
 data PCtx s = PCtx{ polyVars :: Map Var (MPolyTy s)
                   -- , tvarSupply :: Stream TVar
@@ -217,7 +75,6 @@ instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
 
-type Staged w r = Product (Constant w) (Reader r)
 type Remap from to = Staged (Set from) (Map from to)
 
 remap :: (Ord from) => from -> Remap from to to
@@ -232,14 +89,10 @@ thaw = fmap Left
 freezePoly :: MPolyTy s -> Maybe PolyTy
 freezePoly = walk
   where
---     walk :: (v -> Maybe PolyTy) -> UTerm Ty0 v -> Maybe PolyTy
     walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
     walk (UTerm (TCon tcon)) = UTerm <$> pure (TCon tcon)
     walk (UVar (Left a)) = UVar <$> pure a
     walk (UVar (Right v)) = mzero
-
--- generalise :: forall s a. [MTy s] -> ([MTy s] -> M s a) -> M s a
--- generalise tys body = do
 
 fresh :: M s TVar
 fresh = get <* modify succ
@@ -326,29 +179,6 @@ tyCheckBinds binds body = do
         ts <- generalise tvs
         withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
     go [] = body
-
-freeVarsOfTerm :: Term -> Set Var
-freeVarsOfTerm = execWriter . go
-  where
-    go (Var v) = tell $ Set.singleton v
-    go (Lam v e) = censor (Set.delete v) $ go e
-    go Con{} = return ()
-    go (App f e) = go f >> go e
-    go (Case e as) = go e >> traverse_ alt as
-    go (Let bs e) = do
-        let bounds = Set.fromList $ map fst bs
-        censor (Set.\\ bounds) $ do
-            traverse_ (go . snd) bs
-            go e
-
-    alt (p, e) = censor (Set.\\ freeVarsOfPat p) $ go e
-
-freeVarsOfPat :: Pat -> Set Var
-freeVarsOfPat = execWriter . go
-  where
-    go PWild = return ()
-    go (PVar v) = tell $ Set.singleton v
-    go (PCon _ ps) = traverse_ go ps
 
 tyCheckPat :: MTy s -> Pat -> M s a -> M s a
 tyCheckPat t p body = case p of
