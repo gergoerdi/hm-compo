@@ -35,8 +35,6 @@ import Data.Graph
 import Data.Maybe
 import Data.Function
 
-import Debug.Trace
-
 data Typing0 var ty = Map var ty :- ty deriving Show
 
 type Typing = Typing0 Var Ty
@@ -90,25 +88,16 @@ instance PolyBindingMonad Ty0 (MVar s) (Err s) (M s) where
         return $ (`Set.notMember` tvsInScope)
 -}
 
--- unifyTyping :: [Map Var (MTy s)] -> [MTy s] -> M s (MTyping s)
--- unifyTyping mcs ts = do
---     traverse_ unifyMany $ zipMaps mcs
---     unifyMany ts
---     -- mc <- runIdentityT $ applyBindingsAll $ Map.unions mcs
---     -- t <- runIdentityT $ applyBindings t
---     let mc = Map.unions mcs
---     traceShow (mc, t) $ return ()
---     return $ mc :- t
-
 unifyTypings :: [Map Var (MTy s)] -> M s (Map Var (MTy s))
 unifyTypings mcs = do
     traverse_ unifyMany $ zipMaps mcs
-    -- mc <- runIdentityT $ applyBindingsAll $ Map.unions mcs
     return $ Map.unions mcs
 
-unifyMany :: [MTy s] -> M s ()
-unifyMany [t] = return ()
-unifyMany (t:ts) = void $ runIdentityT $ foldM (=:=) t ts
+unifyMany :: [MTy s] -> M s (MTy s)
+unifyMany [t] = return t
+unifyMany (t:ts) = do
+    runIdentityT $ foldM (=:=) t ts
+    return t
 
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
@@ -149,30 +138,16 @@ tyInfer e = case unFix e of
         return $ mc :- a
     Case e as -> do
         mc0 :- t0 <- tyInfer e
-        traceShow ("mc0", mc0, t0) $ return ()
         tps <- forM as $ \(pat, e) -> do
             mcPat :- tPat <- tyInferPat pat
             tPat <- runIdentityT $ t0 =:= tPat
-            mcPat <- runIdentityT $ applyBindingsAll mcPat
-            tPat <- runIdentityT $ applyBindings tPat
-            traceShow ("mcPat", mcPat, tPat) $ return ()
             mc :- t <- withMonoVars (Map.keys mcPat) $ tyInfer e
             unifyTypings [mc, mcPat]
-            mc <- runIdentityT $ applyBindingsAll mc
-            t <- runIdentityT $ applyBindings t
-            traceShow ("mc1", mc, t) $ return ()
             let mc' = mc `Map.difference` mcPat
             return $ mc' :- t
         let (mcs, ts) = unzipTypings tps
-        mc0 <- runIdentityT $ applyBindingsAll mc0
-        mcs <- runIdentityT $ traverse applyBindingsAll mcs
-        traceShow ("mcs", mc0:mcs) $ return ()
         mc <- unifyTypings (mc0:mcs)
-        unifyMany ts
-        let t = head ts -- XXX unifyMany could return this...
-        mc <- runIdentityT $ applyBindingsAll mc
-        t <- runIdentityT $ applyBindings t
-        traceShow ("mc", mc, t) $ return ()
+        t <- unifyMany ts
         return $ mc :- t
     Let binds e -> tyCheckBinds binds $ \mc0 -> do
         mc :- e <- tyInfer e
