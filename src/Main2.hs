@@ -18,6 +18,8 @@ import Data.Maybe
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 
+import Debug.Trace
+
 dcolon :: Doc
 dcolon = text "::"
 
@@ -36,9 +38,23 @@ foo :: M s Doc
 --           -- traverse freezePoly pvars
 --           traverse (maybe (pure $ UVar 0) $ \(_ :- t) -> fmap _ $ freeze t) pvars
 foo = do
-    (mc :- t) <- tyInfer e
-    t <- runIdentityT $ applyBindings t
-    return $ pPrint t
+    -- (mc :- t) <- tyInfer e
+    -- t <- runIdentityT $ applyBindings t
+    -- return $ pPrint t
+    tyCheckBinds bs $ \mc -> do
+        pvars <- asks polyVars
+        let app Nothing = return Nothing
+            app (Just (mc :- t)) = do
+                mc <- runIdentityT $ applyBindingsAll mc
+                t <- runIdentityT $ applyBindings t
+                return $ Just $ mc :- t
+        pvars <- traverse app pvars
+        traceShow pvars $ return ()
+        let monos = [ (name, t) | (name, Just (mc :- t)) <- Map.toList pvars ]
+        tys <- zip (map fst monos) <$> (runIdentityT $ applyBindingsAll . map snd $ monos)
+        return $ vcat [ text name <+> dcolon <+> pPrint t
+                      | (name, t) <- tys
+                      ]
   where
     lam v = Fix . Lam v
     case' e = Fix . Case e
@@ -47,21 +63,24 @@ foo = do
     pvar = Fix . PVar
     con = Fix . Con
     app f e = Fix $ App f e
+    pwild = Fix PWild
     infixl 7 `app`
 
     e = lam "f" $ lam "x" $ (var "f" `app` (var "f" `app` var "x"))
+    bs' = [ ("app2", e)
+          ]
 
-    bs = [ ("map", lam "f" $ lam "xs" $ case' (var "xs")
-                   [ (pcon "Nil" [], con "Nil")
-                   , (pcon "Cons" [pvar "x", pvar "xs"],
-                      con "Cons" `app` (var "f" `app` var "x") `app`
-                      (var "map" `app` var "f" `app` var "xs"))
-                   ])
-         , ("foldr", lam "f" $ lam "y" $ lam "xs" $ case' (var "xs")
+    bs = [ ("foldr", lam "f" $ lam "y" $ lam "xs" $ case' (var "xs")
                      [ (pcon "Nil" [], var "y")
                      , (pcon "Cons" [pvar "x", pvar "xs"],
                         var "f" `app` var "x" `app` (var "foldr" `app` var "f" `app` var "y" `app` var "xs"))
                      ])
+         , ("map", lam "f" $ lam "xs" $ case' (var "xs")
+                   [ (pcon "Nil" [], con "Nil")
+                   , (pcon "Cons" [pvar "x", pvar "ys"],
+                      con "Cons" `app` (var "f" `app` var "x") `app`
+                      (var "map" `app` var "f" `app` var "ys"))
+                   ])
          ]
 
 runMain :: (forall s. M s a) -> a

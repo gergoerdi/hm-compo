@@ -37,7 +37,7 @@ import Data.Function
 
 import Debug.Trace
 
-data Typing0 var ty = Map var ty :- ty
+data Typing0 var ty = Map var ty :- ty deriving Show
 
 type Typing = Typing0 Var Ty
 type MTyping s = Typing0 Var (MTy s)
@@ -70,6 +70,9 @@ withMonoVars vs = local $ \pc -> pc{ polyVars = Map.union newVars $ polyVars pc 
 
 withPolyVars :: Map Var (MTyping s) -> M s a -> M s a
 withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union (Just <$> vtys) $ polyVars pc }
+
+unzipTypings :: [Typing0 var ty] -> ([Map var ty], [ty])
+unzipTypings tps = unzip [(mc, t) | mc :- t <- tps]
 
 instance BindingMonad Ty0 (MVar s) (M s) where
     lookupVar = M . lift . lift . lookupVar
@@ -108,8 +111,7 @@ unifyMany [t] = return ()
 unifyMany (t:ts) = void $ runIdentityT $ foldM (=:=) t ts
 
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
-zipMaps [] = mempty
-zipMaps (m:ms) = foldr (Map.intersectionWith (:)) (pure <$> m) ms
+zipMaps = Map.unionsWith (++) . map (fmap (:[]))
 
 instantiateTyping :: MTyping s -> M s (MTyping s)
 instantiateTyping = error "instantiateTyping"
@@ -146,13 +148,57 @@ tyInfer e = case unFix e of
         runIdentityT $ (u ~> a) =:= t
         return $ mc :- a
     Case e as -> do
-        undefined
-        -- t0 <- tyInfer e
-        -- forM_ as $ \(pat, e) -> do
-        --     tyCheckPat t0 pat $ tyCheck t e
+        mc0 :- t0 <- tyInfer e
+        traceShow ("mc0", mc0, t0) $ return ()
+        (tps, mcs, mcPats) <- fmap unzip3 $ forM as $ \(pat, e) -> do
+            mcPat :- tPat <- tyInferPat pat
+            tPat <- runIdentityT $ t0 =:= tPat
+            mcPat <- runIdentityT $ applyBindingsAll mcPat
+            tPat <- runIdentityT $ applyBindings tPat
+            traceShow ("mcPat", mcPat, tPat) $ return ()
+            mc :- t <- withMonoVars (Map.keys mcPat) $ tyInfer e
+            mc <- runIdentityT $ applyBindingsAll mc
+            t <- runIdentityT $ applyBindings t
+            traceShow ("mc1", mc, t) $ return ()
+            let mc' = mc `Map.difference` mcPat
+            return (mc' :- t, mc, mcPat)
+        let (_, ts) = unzipTypings tps
+        mc0 <- runIdentityT $ applyBindingsAll mc0
+        mcs <- runIdentityT $ traverse applyBindingsAll mcs
+        mcPats <- runIdentityT $ traverse applyBindingsAll mcPats
+        traceShow ("mcs", mc0:mcs++mcPats) $ return ()
+        mc <- unifyTypings (mc0:mcs ++ mcPats)
+        unifyMany ts
+        let t = head ts -- XXX unifyMany could return this...
+        mc <- runIdentityT $ applyBindingsAll mc
+        t <- runIdentityT $ applyBindings t
+        traceShow ("mc", mc, t) $ return ()
+        return $ mc :- t
     Let binds e -> tyCheckBinds binds $ \mc0 -> do
         mc :- e <- tyInfer e
         return $ Map.union mc mc0 :- e
+
+tyInferPat :: Pat -> M s (MTyping s)
+tyInferPat pat = case unFix pat of
+    PWild -> do
+        t <- UVar <$> freeVar
+        return $ mempty :- t
+    PVar v -> do
+        t <- UVar <$> freeVar
+        return $ Map.singleton v t :- t
+    PCon dcon ps -> do
+        ct <- asks $ Map.lookup dcon . dataCons
+        ct <- case ct of
+            Nothing -> throwError $ Err $ unwords ["Unknown data constructor:", show dcon]
+            Just ct -> instantiate $ thaw ct
+        let (tArgs, t) = tFunArgs ct
+        unless (length ps == length tArgs) $
+          throwError $ Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs]
+        tps <- traverse tyInferPat ps
+        let (mcs, ts) = unzipTypings tps
+        mc <- unifyTypings mcs
+        runIdentityT $ zipWithM_ (=:=) tArgs ts
+        return $ mc :- t
 
 tyCheckBinds :: [(Var, Term)] -> (Map Var (MTy s) -> M s a) -> M s a
 tyCheckBinds binds body = do
@@ -162,10 +208,14 @@ tyCheckBinds binds body = do
     go mc0 (bs:bss) = do
         pc <- withMonoVars (map fst bs) $ do
             tps <- zip (map fst bs) <$> traverse (tyInfer . snd) bs
-            let mcs = [Map.insert v t mc | (v, mc :- t) <- tps]
-            unifyTypings mcs
+            -- let mcs = [Map.insert v t mc | (v, mc :- t) <- tps]
+            -- unifyTypings mcs
+            let (mcs, ts) = unzipTypings $ map snd tps
+            mc <- unifyTypings mcs
+            let mcRecs = [Map.singleton v t | (v, mc :- t) <- tps]
+            unifyTypings (mc:mcRecs)
             return $ Map.fromList tps
-        let mcs = [mc | (mc :- t) <- Map.elems pc]
+        let (mcs, _) = unzipTypings $ Map.elems pc
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
 
