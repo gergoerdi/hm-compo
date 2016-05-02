@@ -150,24 +150,24 @@ tyInfer e = case unFix e of
     Case e as -> do
         mc0 :- t0 <- tyInfer e
         traceShow ("mc0", mc0, t0) $ return ()
-        (tps, mcs, mcPats) <- fmap unzip3 $ forM as $ \(pat, e) -> do
+        tps <- forM as $ \(pat, e) -> do
             mcPat :- tPat <- tyInferPat pat
             tPat <- runIdentityT $ t0 =:= tPat
             mcPat <- runIdentityT $ applyBindingsAll mcPat
             tPat <- runIdentityT $ applyBindings tPat
             traceShow ("mcPat", mcPat, tPat) $ return ()
             mc :- t <- withMonoVars (Map.keys mcPat) $ tyInfer e
+            unifyTypings [mc, mcPat]
             mc <- runIdentityT $ applyBindingsAll mc
             t <- runIdentityT $ applyBindings t
             traceShow ("mc1", mc, t) $ return ()
             let mc' = mc `Map.difference` mcPat
-            return (mc' :- t, mc, mcPat)
-        let (_, ts) = unzipTypings tps
+            return $ mc' :- t
+        let (mcs, ts) = unzipTypings tps
         mc0 <- runIdentityT $ applyBindingsAll mc0
         mcs <- runIdentityT $ traverse applyBindingsAll mcs
-        mcPats <- runIdentityT $ traverse applyBindingsAll mcPats
-        traceShow ("mcs", mc0:mcs++mcPats) $ return ()
-        mc <- unifyTypings (mc0:mcs ++ mcPats)
+        traceShow ("mcs", mc0:mcs) $ return ()
+        mc <- unifyTypings (mc0:mcs)
         unifyMany ts
         let t = head ts -- XXX unifyMany could return this...
         mc <- runIdentityT $ applyBindingsAll mc

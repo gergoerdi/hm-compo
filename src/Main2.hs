@@ -49,7 +49,7 @@ foo = do
                 t <- runIdentityT $ applyBindings t
                 return $ Just $ mc :- t
         pvars <- traverse app pvars
-        traceShow pvars $ return ()
+        -- traceShow pvars $ return ()
         let monos = [ (name, t) | (name, Just (mc :- t)) <- Map.toList pvars ]
         tys <- zip (map fst monos) <$> (runIdentityT $ applyBindingsAll . map snd $ monos)
         return $ vcat [ text name <+> dcolon <+> pPrint t
@@ -77,11 +77,18 @@ foo = do
                      ])
          , ("map", lam "f" $ lam "xs" $ case' (var "xs")
                    [ (pcon "Nil" [], con "Nil")
-                   , (pcon "Cons" [pvar "x", pvar "ys"],
-                      con "Cons" `app` (var "f" `app` var "x") `app`
-                      (var "map" `app` var "f" `app` var "ys"))
+                   , (pcon "Cons" [pvar "xs", pvar "x"],
+                      con "Cons" `app` (var "f" `app` var "xs") `app`
+                      (var "map" `app` var "f" `app` var "x"))
                    ])
          ]
+
+    -- bs = [ ("copy", lam "xs" $ case' (var "xs")
+    --                [ (pcon "Nil" [], con "Nil")
+    --                , (pcon "Cons" [pvar "xs", pvar "x"],
+    --                   con "Cons" `app` var "xs" `app` var"x")
+    --                ])
+    --      ]
 
 runMain :: (forall s. M s a) -> a
 runMain act = runSTBinding $ runM dataCons act
