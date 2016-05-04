@@ -33,10 +33,6 @@ type MVar s = STVar s Ty0
 type MTy s = UTerm Ty0 (MVar s)
 type MPolyTy s = UTerm Ty0 (Either TVar (MVar s))
 
-class (MonadError e m, Fallible t v e, BindingMonad t v m) => PolyBindingMonad t v e m | m -> t v e where
-    freshTVar :: m TVar
-    getIsFree :: m (v -> Bool)
-
 instance Ord (STVar s t) where
     compare = compare `on` getVarID
 
@@ -61,20 +57,6 @@ polyMetaVars = execWriter . traverse_ go
     go (UTerm (TCon _)) = pure ()
     go (UVar (Left a)) = pure ()
     go (UVar (Right v)) = tell $ Set.singleton v
-
-generalise :: (Traversable t, PolyBindingMonad Ty0 (MVar s) e m)
-           => t (MTy s) -> m (t (MPolyTy s))
-generalise tys = do
-    tys <- runIdentityT $ applyBindingsAll tys
-    free <- getIsFree
-    let Pair (Constant mvars) fill = traverse (walk free) tys
-    runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
-  where
-    walk :: (MVar s -> Bool) -> MTy s -> Remap (MVar s) TVar (MPolyTy s)
-    walk free (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk free t <*> walk free u)
-    walk free (UTerm (TCon con)) = UTerm <$> pure (TCon con)
-    walk free (UVar v) | free v = UVar <$> (Left <$> remap v)
-                       | otherwise = UVar <$> pure (Right v)
 
 instantiateN :: (BindingMonad Ty0 (MVar s) m, Traversable t)
              => t (MPolyTy s) -> m (t (MTy s))

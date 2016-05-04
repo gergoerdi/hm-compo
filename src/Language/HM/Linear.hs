@@ -65,17 +65,27 @@ instance BindingMonad Ty0 (MVar s) (M s) where
     newVar = M . lift . lift . newVar
     bindVar v = M . lift . lift . bindVar v
 
-instance PolyBindingMonad Ty0 (MVar s) (Err s) (M s) where
-    freshTVar = get <* modify succ
-
-    getIsFree = do
-        tysInScope <- asks $ Map.elems . polyVars
-        let tvsInScope = polyMetaVars tysInScope
-        return $ (`Set.notMember` tvsInScope)
-
 instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
+
+freshTVar :: M s TVar
+freshTVar = get <* modify succ
+
+generalise :: (Traversable t) => t (MTy s) -> M s (t (MPolyTy s))
+generalise tys = do
+    tys <- runIdentityT $ applyBindingsAll tys
+    tysInScope <- asks $ Map.elems . polyVars
+    let tvsInScope = polyMetaVars tysInScope
+        free = (`Set.notMember` tvsInScope)
+    let Pair (Constant mvars) fill = traverse (walk free) tys
+    runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
+  where
+    walk :: (MVar s -> Bool) -> MTy s -> Remap (MVar s) TVar (MPolyTy s)
+    walk free (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk free t <*> walk free u)
+    walk free (UTerm (TCon con)) = UTerm <$> pure (TCon con)
+    walk free (UVar v) | free v = UVar <$> (Left <$> remap v)
+                       | otherwise = UVar <$> pure (Right v)
 
 tyCheck :: MTy s -> Term tag -> M s ()
 tyCheck t e = case unTag e of
