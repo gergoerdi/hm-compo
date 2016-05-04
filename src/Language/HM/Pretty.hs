@@ -28,12 +28,9 @@ pprType :: Rational -> UTerm Ty0 v -> Ppr v Doc
 pprType = go
   where
     go p t0@(UTerm t) = case t of
-        TApp{} -> case tApps t0 of
-            (UTerm (TCon "Fun"), [t, u]) ->
-                (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
-            (tcon, []) -> go 0 tcon
-            (tcon, targs) -> (\t ts -> par 2 $ t <+> hsep ts) <$> go 0 tcon <*> traverse (go 2) targs
-        TCon tcon -> pure $ text tcon
+        TApp "Fun" [t, u] -> (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
+        TApp tcon [] -> pure $ text tcon
+        TApp tcon targs -> (\ts -> par 2 $ text tcon <+> hsep ts) <$> traverse (go 2) targs
       where
         par i | p >= i = parens
               | otherwise = id

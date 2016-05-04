@@ -45,16 +45,14 @@ thaw = fmap Left
 freezePoly :: MPolyTy s -> Maybe PolyTy
 freezePoly = walk
   where
-    walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
-    walk (UTerm (TCon tcon)) = UTerm <$> pure (TCon tcon)
+    walk (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse walk ts)
     walk (UVar (Left a)) = UVar <$> pure a
     walk (UVar (Right v)) = mzero
 
 polyMetaVars :: [MPolyTy s] -> Set (MVar s)
 polyMetaVars = execWriter . traverse_ go
   where
-    go (UTerm (TApp t u)) = go t >> go u
-    go (UTerm (TCon _)) = pure ()
+    go (UTerm (TApp _ ts)) = traverse_ go ts
     go (UVar (Left a)) = pure ()
     go (UVar (Right v)) = tell $ Set.singleton v
 
@@ -66,8 +64,7 @@ instantiateN ty = do
     return $ runReader fill tvars
   where
     walk :: MPolyTy s -> Remap TVar (MVar s) (MTy s)
-    walk (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk t <*> walk u)
-    walk (UTerm (TCon con)) = UTerm <$> pure (TCon con)
+    walk (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse walk ts)
     walk (UVar (Left a)) = UVar <$> remap a
     walk (UVar (Right v)) = UVar <$> pure v
 
@@ -76,6 +73,6 @@ instantiate :: (BindingMonad Ty0 (MVar s) m)
 instantiate = fmap runIdentity . instantiateN . Identity
 
 (~>) :: UTerm Ty0 v -> UTerm Ty0 v -> UTerm Ty0 v
-t ~> u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Fun") t) u
+t ~> u = UTerm $ TApp "Fun" [t, u]
 
 infixr 7 ~>

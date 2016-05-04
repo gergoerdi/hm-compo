@@ -100,5 +100,5 @@ runMain act = runSTBinding $ runM dataCons act
 
     alpha = UVar 0
     beta = UVar 1
-    tList = UTerm . TApp (UTerm $ TCon "List")
-    tPair t u = UTerm $ TApp (UTerm $ TApp (UTerm $ TCon "Pair") t) u
+    tList = UTerm . TApp "List" . (:[])
+    tPair t u = UTerm $ TApp "Pair" [t, u]

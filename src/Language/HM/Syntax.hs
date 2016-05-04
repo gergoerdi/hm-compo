@@ -15,17 +15,14 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 
 data TyF tcon a
-    = TApp a a
-    | TCon tcon
+    = TApp tcon [a]
     deriving (Eq, Show, Functor, Foldable, Traversable)
 
 instance (Eq tcon) => Unifiable (TyF tcon) where
-    zipMatch (TCon dc1) (TCon dc2) = do
-        guard $ dc1 == dc2
-        return $ TCon dc1
-    zipMatch (t1 `TApp` t2) (t1' `TApp` t2') = do
-        return $ Right (t1, t1') `TApp` Right (t2, t2')
-    zipMatch _ _ = mzero
+    zipMatch (TApp tc1 ts) (TApp tc2 us) = do
+        guard $ tc1 == tc2
+        guard $ length ts == length us
+        return $ TApp tc1 $ map Right $ zip ts us
 
 type TCon = String
 type Ty0 = TyF TCon
@@ -35,18 +32,10 @@ type Ty = Fix Ty0
 type TVar = Int
 type PolyTy = UTerm Ty0 TVar
 
-tApps :: UTerm (TyF tcon) v -> (UTerm (TyF tcon) v, [UTerm (TyF tcon) v])
-tApps t = case go t of
-    (t, ts) -> (t, reverse ts)
-  where
-    go (UTerm (TApp t u)) = case go t of (t, ts) -> (t, u:ts)
-    go t = (t, [])
-
 tFunArgs :: UTerm Ty0 v -> ([UTerm Ty0 v], UTerm Ty0 v)
 tFunArgs = go
   where
-    go (UTerm (TApp (UTerm (TApp (UTerm (TCon "Fun")) t)) u)) =
-        case go u of (ts, t0) -> (t:ts, t0)
+    go (UTerm (TApp "Fun" [t, u])) = case go u of (ts, t0) -> (t:ts, t0)
     go t = ([], t)
 
 data Tagged a tag = Tagged{ getTag :: tag, unTag :: a } deriving Show

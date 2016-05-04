@@ -82,8 +82,7 @@ generalise tys = do
     runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
   where
     walk :: (MVar s -> Bool) -> MTy s -> Remap (MVar s) TVar (MPolyTy s)
-    walk free (UTerm (TApp t u)) = UTerm <$> (TApp <$> walk free t <*> walk free u)
-    walk free (UTerm (TCon con)) = UTerm <$> pure (TCon con)
+    walk free (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse (walk free) ts)
     walk free (UVar v) | free v = UVar <$> (Left <$> remap v)
                        | otherwise = UVar <$> pure (Right v)
 
