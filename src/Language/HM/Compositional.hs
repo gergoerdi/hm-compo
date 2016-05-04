@@ -78,16 +78,6 @@ instance BindingMonad Ty0 (MVar s) (M s) where
     newVar = M . lift . lift . newVar
     bindVar v = M . lift . lift . bindVar v
 
-{-
-instance PolyBindingMonad Ty0 (MVar s) (Err s) (M s) where
-    freshTVar = get <* modify succ
-
-    getIsFree = do
-        tysInScope <- asks $ Map.elems . polyVars
-        let tvsInScope = polyMetaVars tysInScope
-        return $ (`Set.notMember` tvsInScope)
--}
-
 unifyTypings :: [Map Var (MTy s)] -> M s (Map Var (MTy s))
 unifyTypings mcs = do
     traverse_ unifyMany $ zipMaps mcs
