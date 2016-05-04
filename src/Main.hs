@@ -33,13 +33,13 @@ foo' = do
         return $ fromMaybe (error "metavar escaped to top level!") $
           traverse freezePoly pvars
   where
-    lam v = Fix . Lam v
-    case' e = Fix . Case e
-    var = Fix . Var
-    pcon c = Fix . PCon c
-    pvar = Fix . PVar
-    con = Fix . Con
-    app f e = Fix $ App f e
+    lam v = Tagged () . Lam v
+    case' e = Tagged () . Case e
+    var = Tagged () . Var
+    pcon c = Tagged () . PCon c
+    pvar = Tagged () . PVar
+    con = Tagged () . Con
+    app f e = Tagged () $ App f e
     infixl 7 `app`
 
     bs = [ ("map", lam "f" $ lam "xs" $ case' (var "xs")

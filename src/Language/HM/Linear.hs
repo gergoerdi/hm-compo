@@ -77,8 +77,8 @@ instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
 
-tyCheck :: MTy s -> Term -> M s ()
-tyCheck t e = case unFix e of
+tyCheck :: MTy s -> Term tag -> M s ()
+tyCheck t e = case unTag e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         vt <- case vt of
@@ -110,7 +110,7 @@ tyCheck t e = case unFix e of
             tyCheckPat t0 pat $ tyCheck t e
     Let binds e -> tyCheckBinds binds $ tyCheck t e
 
-tyCheckBinds :: [(Var, Term)] -> M s a -> M s a
+tyCheckBinds :: [(Var, Term tag)] -> M s a -> M s a
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
     go (map flattenSCC $ stronglyConnComp g)
@@ -123,8 +123,8 @@ tyCheckBinds binds body = do
         withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
     go [] = body
 
-tyCheckPat :: MTy s -> Pat -> M s a -> M s a
-tyCheckPat t p body = case unFix p of
+tyCheckPat :: MTy s -> Pat tag -> M s a -> M s a
+tyCheckPat t p body = case unTag p of
     PWild -> body
     PVar v -> withVar v (mono t) body
     PCon dcon ps -> do
@@ -141,7 +141,7 @@ tyCheckPat t p body = case unFix p of
         go ((t, p):tps) = tyCheckPat t p $ go tps
         go [] = body
 
-tyInfer :: Term -> M s (MTy s)
+tyInfer :: Term a -> M s (MTy s)
 tyInfer e = do
     ty <- UVar <$> freeVar
     tyCheck ty e

@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
-{-# LANGUAGE TypeFamilies, StandaloneDeriving #-}
 
 module Language.HM.Syntax where
 
@@ -50,39 +49,39 @@ tFunArgs = go
         case go u of (ts, t0) -> (t:ts, t0)
     go t = ([], t)
 
-data TermF dcon var a
+data Tagged a tag = Tagged{ getTag :: tag, unTag :: a } deriving Show
+
+data TermF dcon var tag
     = Var var
     | Con dcon
-    | Lam var a
-    | App a a
-    | Case a [(PatFam a, a)]
-    | Let [(var, a)] a
-deriving instance (Show dcon, Show var, Show a, Show (PatFam a)) => Show (TermF dcon var a)
+    | Lam var (Term0 dcon var tag)
+    | App (Term0 dcon var tag) (Term0 dcon var tag)
+    | Case (Term0 dcon var tag) [(Pat0 dcon var tag, Term0 dcon var tag)]
+    | Let [(var, Term0 dcon var tag)] (Term0 dcon var tag)
+    deriving Show
+
+type Term0 dcon var tag = Tagged (TermF dcon var tag) tag
 
 infixl 7 `App`
 
-data PatF dcon var a
+data PatF dcon var tag
     = PVar var
     | PWild
-    | PCon dcon [a]
+    | PCon dcon [Pat0 dcon var tag]
     deriving Show
 
-type family PatFam a
-type instance PatFam (Fix (TermF dcon dvar)) = Fix (PatF dcon dvar)
+type Pat0 dcon var tag = Tagged (PatF dcon var tag) tag
 
 type Var = String
 type DCon = String
 
-type Term0 = TermF DCon Var
-type Pat0 = PatF DCon Var
+type Term a = Term0 DCon Var a
+type Pat a = Pat0 DCon Var a
 
-type Term = Fix Term0
-type Pat = Fix Pat0
-
-freeVarsOfTerm :: Term -> Set Var
+freeVarsOfTerm :: Term a -> Set Var
 freeVarsOfTerm = execWriter . go
   where
-    go e = case unFix e of
+    go e = case unTag e of
         Var v -> tell $ Set.singleton v
         Lam v e -> censor (Set.delete v) $ go e
         Con{} -> return ()
@@ -95,10 +94,10 @@ freeVarsOfTerm = execWriter . go
 
     alt (p, e) = censor (Set.\\ freeVarsOfPat p) $ go e
 
-freeVarsOfPat :: Pat -> Set Var
+freeVarsOfPat :: Pat a -> Set Var
 freeVarsOfPat = execWriter . go
   where
-    go p = case unFix p of
+    go p = case unTag p of
         PWild -> return ()
         PVar v -> tell $ Set.singleton v
         PCon _ ps -> traverse_ go ps

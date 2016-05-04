@@ -109,8 +109,8 @@ instance MonadError (Err s) (M s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
 
-tyInfer :: Term -> M s (MTyping s)
-tyInfer e = case unFix e of
+tyInfer :: Term tag -> M s (MTyping s)
+tyInfer e = case unTag e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         case vt of
@@ -150,11 +150,11 @@ tyInfer e = case unFix e of
         t <- unifyMany ts
         return $ mc :- t
     Let binds e -> tyCheckBinds binds $ \mc0 -> do
-        mc :- e <- tyInfer e
-        return $ Map.union mc mc0 :- e
+        mc :- t <- tyInfer e
+        return $ Map.union mc mc0 :- t
 
-tyInferPat :: Pat -> M s (MTyping s)
-tyInferPat pat = case unFix pat of
+tyInferPat :: Pat tag -> M s (MTyping s)
+tyInferPat pat = case unTag pat of
     PWild -> do
         t <- UVar <$> freeVar
         return $ mempty :- t
@@ -175,7 +175,7 @@ tyInferPat pat = case unFix pat of
         runIdentityT $ zipWithM_ (=:=) tArgs ts
         return $ mc :- t
 
-tyCheckBinds :: [(Var, Term)] -> (Map Var (MTy s) -> M s a) -> M s a
+tyCheckBinds :: [(Var, Term tag)] -> (Map Var (MTy s) -> M s a) -> M s a
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
     go mempty (map flattenSCC $ stronglyConnComp g)

@@ -56,14 +56,14 @@ foo = do
                       | (name, t) <- tys
                       ]
   where
-    lam v = Fix . Lam v
-    case' e = Fix . Case e
-    var = Fix . Var
-    pcon c = Fix . PCon c
-    pvar = Fix . PVar
-    con = Fix . Con
-    app f e = Fix $ App f e
-    pwild = Fix PWild
+    lam v = Tagged () . Lam v
+    case' e = Tagged () . Case e
+    var = Tagged () . Var
+    pcon c = Tagged () . PCon c
+    pvar = Tagged () . PVar
+    con = Tagged () . Con
+    app f e = Tagged () $ App f e
+    pwild = Tagged () PWild
     infixl 7 `app`
 
     e = lam "f" $ lam "x" $ (var "f" `app` (var "f" `app` var "x"))
