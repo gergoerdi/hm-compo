@@ -9,6 +9,7 @@ import Text.Parsec.Char
 import Text.Parsec.Indent
 import Text.Parsec.Expr
 import Control.Monad.Identity
+import Data.List (sort, nub)
 
 type Parser a = IndentParser String () a
 
@@ -31,15 +32,38 @@ tag p = Tagged () <$> p
 kw :: String -> Parser ()
 kw = void . lexeme . string
 
+tyPart :: Parser (UTerm Ty0 String)
+tyPart = choice [ parens ty
+                , UVar <$> varName
+                , UTerm <$> (TApp <$> conName <*> pure [])
+                ]
+
+tyFun :: UTerm Ty0 a -> UTerm Ty0 a -> UTerm Ty0 a
+tyFun t u = UTerm $ TApp "Fun" [t, u]
+
 ty :: Parser (UTerm Ty0 String)
-ty = do
-    tys <- ty' `sepBy1` kw "->"
-    return $ foldr1 (\t u -> UTerm $ TApp "->" [t, u]) tys
+ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
   where
-    ty' = choice [ parens ty
-                 , UVar <$> varName
-                 , UTerm <$> (TApp <$> conName <*> many ty')
-                 ]
+    tyPart' = choice [ parens ty
+                     , UVar <$> varName
+                     , UTerm <$> (TApp <$> conName <*> many tyPart)
+                     ]
+
+dataDef :: Parser [(DCon, [String], UTerm Ty0 String)]
+dataDef = do
+    ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` kw "|"
+    let t = UTerm $ TApp tname $ map UVar params
+        toDConTy = foldr tyFun t
+    return [(dcon, params, dconTy) | (dcon, ts) <- dconSpecs, let dconTy = toDConTy ts]
+  where
+    header = kw "data" *> ((,) <$> conName <*> many varName) <* kw "="
+    dcon = (,) <$> conName <*> many tyPart
+
+distinct :: (Ord a) => [a] -> Bool
+distinct xs = let xs' = sort xs in nub xs' == xs'
+
+-- dataDef :: Parser (String, [String])
+-- dataDef = kw "data" *> ((,) <$> conName <* kw "=" <*> conName `sepBy` kw "|")
 
 term :: Parser (Term ())
 term = buildExpressionParser table (sameOrIndented *> atom) <?> "term"
@@ -73,14 +97,6 @@ pat = choice [ parens pat
              , tag $ PCon <$> conName <*> many pat
              ]
 
-dataDef :: Parser (String, [String])
-dataDef = kw "data" *> ((,) <$> conName <* kw "=" <*> conName `sepBy` kw "|")
-
-lets :: Parser ([(String, String)], String)
-lets = (,)
-         <$> iblock_ (kw "let") ((,) <$> varName <* kw "=" <*> varName)
-         <*> (kw "in" *> varName)
-
 iblock_ :: Parser x -> Parser a -> Parser [a]
 iblock_ = iblock (const id)
 
@@ -97,7 +113,7 @@ foo p s = runIndent "" $ runPT p () "" s
 --             ]
 -- s = unlines [ "case xs of Nil -> Nil"
 --             ]
-s = unlines [ "case xs of"
-            , "  Nil -> Nil"
-            , "  Cons x xs -> Cons (f x) (map f xs)"
+s = unlines [ "\\f -> \\xs -> case xs of"
+            , "              Nil -> Nil"
+            , "              Cons x xs -> Cons (f x) (map f xs)"
             ]
