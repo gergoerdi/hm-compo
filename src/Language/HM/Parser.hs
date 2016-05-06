@@ -4,35 +4,32 @@ import Language.HM.Syntax
 import Control.Unification
 import Data.Functor.Fixedpoint
 
-import Text.Parsec
-import Text.Parsec.Char
-import Text.Parsec.Indent
-import Text.Parsec.Expr
-import Control.Monad.Identity
+import Text.Trifecta
+import Text.Trifecta.Indentation
+
+import Control.Monad (void)
+import Data.Char
 import Data.List (sort, nub)
 
-type Parser a = IndentParser String () a
+type IP = IndentationParserT Token Parser
 
-conName :: Parser String
-conName = lexeme $ (:) <$> upper <*> many alphaNum
+conName :: IP String
+conName = token $ (:) <$> upper <*> many alphaNum
 
-varName :: Parser String
+varName :: IP String
 varName = try $ do
-    s <- lexeme $ (:) <$> lower <*> many alphaNum
+    s <- token $ (:) <$> lower <*> many alphaNum
     if s `elem` ["let", "in", "case", "of"]
       then unexpected $ unwords ["reserved word", show s]
       else return s
 
-lexeme :: Parser a -> Parser a
-lexeme p = p <* spaces
-
-tag :: Parser a -> Parser (Tagged a ())
+tag :: IP a -> IP (Tagged a ())
 tag p = Tagged () <$> p
 
-kw :: String -> Parser ()
-kw = void . lexeme . string
+kw :: String -> IP ()
+kw = void . symbol
 
-tyPart :: Parser (UTerm Ty0 String)
+tyPart :: IP (UTerm Ty0 String)
 tyPart = choice [ parens ty
                 , UVar <$> varName
                 , UTerm <$> (TApp <$> conName <*> pure [])
@@ -41,7 +38,7 @@ tyPart = choice [ parens ty
 tyFun :: UTerm Ty0 a -> UTerm Ty0 a -> UTerm Ty0 a
 tyFun t u = UTerm $ TApp "Fun" [t, u]
 
-ty :: Parser (UTerm Ty0 String)
+ty :: IP (UTerm Ty0 String)
 ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
   where
     tyPart' = choice [ parens ty
@@ -49,7 +46,7 @@ ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
                      , UTerm <$> (TApp <$> conName <*> many tyPart)
                      ]
 
-dataDef :: Parser [(DCon, [String], UTerm Ty0 String)]
+dataDef :: IP [(DCon, [String], UTerm Ty0 String)]
 dataDef = do
     ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` kw "|"
     let t = UTerm $ TApp tname $ map UVar params
@@ -62,15 +59,9 @@ dataDef = do
 distinct :: (Ord a) => [a] -> Bool
 distinct xs = let xs' = sort xs in nub xs' == xs'
 
--- dataDef :: Parser (String, [String])
--- dataDef = kw "data" *> ((,) <$> conName <* kw "=" <*> conName `sepBy` kw "|")
-
-term :: Parser (Term ())
-term = buildExpressionParser table (sameOrIndented *> atom) <?> "term"
+term :: IP (Term ())
+term = chainl1 (localIndentation Gt atom) (spaces >> return (\x y -> Tagged () $ App x y))
   where
-    table = [[Infix (sameOrIndented >> spaces >> return (\x y -> Tagged () $ App x y)) AssocLeft]]
-
-    atom :: Parser (Term ())
     atom = choice [ parens term
                   , tag $ letBlock
                   , tag $ caseBlock
@@ -85,35 +76,35 @@ term = buildExpressionParser table (sameOrIndented *> atom) <?> "term"
 
     caseBlock = iblock Case (kw "case" *> term <* kw "of") alt
 
-    alt = (,) <$> (pat <* kw "->") <*> withPos term
+    alt = (,) <$> (pat <* kw "->") <*> term
 
-parens :: Parser a -> Parser a
-parens p = kw "(" *> p <* kw ")"
-
-pat :: Parser (Pat ())
+pat :: IP (Pat ())
 pat = choice [ parens pat
              , tag $ PVar <$> varName
              , tag $ kw "_" *> pure PWild
              , tag $ PCon <$> conName <*> many pat
              ]
 
-iblock_ :: Parser x -> Parser a -> Parser [a]
+iblock_ :: IP x -> IP a -> IP [a]
 iblock_ = iblock (const id)
 
-iblock :: (a -> [b] -> c) -> Parser a -> Parser b -> Parser c
-iblock f header body = withPos $ do
-    x <- withPos header
-    ys <- many $ indented >> try body
+iblock :: (a -> [b] -> c) -> IP a -> IP b -> IP c
+iblock f header body = do
+    x <- ignoreAbsoluteIndentation header
+    ys <- absoluteIndentation $ many body
     return $ f x ys
 
-foo :: Parser a -> String -> Either ParseError a
-foo p s = runIndent "" $ runPT p () "" s
+s1 = unlines [ "data List a"
+             , "    = Nil"
+             , "    | Cons a (List a)"
+             ]
 
--- s = unlines [ "let map = \\f -> \\xs -> case xs of Nil -> Nil in map"
---             ]
--- s = unlines [ "case xs of Nil -> Nil"
---             ]
-s = unlines [ "\\f -> \\xs -> case xs of"
-            , "              Nil -> Nil"
-            , "              Cons x xs -> Cons (f x) (map f xs)"
-            ]
+s2 = unlines [ "\\f -> \\xs -> case xs of"
+             , "  Nil -> Nil"
+             , "  Cons x xs -> Cons (f x) (map f xs)"
+             ]
+
+foo :: IP a -> String -> Result a
+foo p = parseString p' mempty
+  where
+    p' = evalIndentationParserT p $ mkIndentationState 1 infIndentation True Ge
