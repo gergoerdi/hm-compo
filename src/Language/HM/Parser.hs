@@ -13,11 +13,24 @@ import Data.List (sort, nub)
 
 type IP = IndentationParserT Token Parser
 
+data Decl tag = DataDef DCon (UTerm Ty0 String)
+              | VarDef Var (Term tag)
+              deriving Show
+
+decl :: IP [Decl ()]
+decl = fmap concat . many $
+       choice [ map ppDataDef <$> dataDef
+              , (:[]) . uncurry VarDef <$> binding
+              ]
+  where
+    ppDataDef (dcon, _, ty) = DataDef dcon ty
+
 conName :: IP String
-conName = token $ (:) <$> upper <*> many alphaNum
+conName = (<?> "constructor name") $
+          token $ (:) <$> upper <*> many alphaNum
 
 varName :: IP String
-varName = try $ do
+varName = (<?> "variable name") $ try $ do
     s <- token $ (:) <$> lower <*> many alphaNum
     if s `elem` ["let", "in", "case", "of"]
       then unexpected $ unwords ["reserved word", show s]
@@ -60,9 +73,9 @@ distinct :: (Ord a) => [a] -> Bool
 distinct xs = let xs' = sort xs in nub xs' == xs'
 
 term :: IP (Term ())
-term = chainl1 (localIndentation Gt atom) (spaces >> return (\x y -> Tagged () $ App x y))
+term = chainl1 (localIndentation Ge atom) (spaces >> return (\x y -> Tagged () $ App x y))
   where
-    atom = choice [ parens term
+    atom = choice [ parens $ ignoreAbsoluteIndentation term
                   , tag $ letBlock
                   , tag $ caseBlock
                   , tag $ Var <$> varName
@@ -72,14 +85,18 @@ term = chainl1 (localIndentation Gt atom) (spaces >> return (\x y -> Tagged () $
 
     letBlock = Let <$> iblock_ (kw "let") binding <*> (kw "in" *> term)
 
-    binding = (,) <$> (varName <* kw "=") <*> term
-
     caseBlock = iblock Case (kw "case" *> term <* kw "of") alt
 
     alt = (,) <$> (pat <* kw "->") <*> term
 
+binding :: IP (Var, Term ())
+-- binding = localTokenMode (const Ge) $
+--           (,) <$> (varName <* kw "=") <*> (ignoreAbsoluteIndentation term)
+binding = localTokenMode (const Gt) $ (,) <$> (varName <* kw "=") <*> localTokenMode (const Gt) term
+
 pat :: IP (Pat ())
-pat = choice [ parens pat
+pat = (<?> "pattern") $
+      choice [ parens pat
              , tag $ PVar <$> varName
              , tag $ kw "_" *> pure PWild
              , tag $ PCon <$> conName <*> many pat
@@ -90,21 +107,36 @@ iblock_ = iblock (const id)
 
 iblock :: (a -> [b] -> c) -> IP a -> IP b -> IP c
 iblock f header body = do
-    x <- ignoreAbsoluteIndentation header
-    ys <- absoluteIndentation $ many body
+    -- x <- ignoreAbsoluteIndentation header
+    x <- header
+    -- ys <- absoluteIndentation $ many body
+    ys <- localTokenMode (const Gt) $ many body
     return $ f x ys
 
 s1 = unlines [ "data List a"
-             , "    = Nil"
-             , "    | Cons a (List a)"
+             , "  = Nil"
+             , "  | Cons a (List a)"
              ]
 
-s2 = unlines [ "\\f -> \\xs -> case xs of"
-             , "  Nil -> Nil"
-             , "  Cons x xs -> Cons (f x) (map f xs)"
+s2 = unlines [ "map = \\f -> \\xs -> case xs of"
+             , "   Nil -> Nil"
+             , "   Cons x xs -> Cons (f x) (map f xs)"
              ]
 
-foo :: IP a -> String -> Result a
-foo p = parseString p' mempty
+s2' = unlines [ "map = \\f -> case xs of"
+              , "  Nil -> Nil"
+              ]
+
+s4 = unlines [ "\\f -> \\x -> case xs of"
+             , " Nil -> Nil"
+             ]
+
+s3 = unlines [ "map = f g"
+             , " x"
+             , "foo = q"
+             ]
+
+runIP :: IP a -> String -> Result a
+runIP p = parseString p' mempty
   where
-    p' = evalIndentationParserT p $ mkIndentationState 1 infIndentation True Ge
+    p' = evalIndentationParserT p $ mkIndentationState 1 infIndentation True Eq
