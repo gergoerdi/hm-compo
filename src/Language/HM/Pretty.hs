@@ -52,3 +52,26 @@ instance Pretty Ty where
 
 instance (Eq v, Ord v) => Pretty (UTerm Ty0 v) where
     pPrintPrec level prec t = runPpr $ pprType prec t
+
+instance Pretty (PatF String String a) where
+    pPrintPrec level prec p = case p of
+        PVar x -> text x
+        PWild -> text "_"
+        PCon dcon pats -> maybeParens (not (null pats) && prec >= 1) $
+                          text dcon <+> hsep (map (pPrintPrec level (prec + 1)) pats)
+
+instance Pretty (TermF String String a) where
+    pPrintPrec level prec p = case p of
+        Var x -> text x
+        Con dcon -> text dcon
+        Lam var e -> maybeParens (prec >= 1) $
+                     text "\\" <> text var <+> text "->" <+> pPrintPrec level prec e
+        App f e -> maybeParens (prec >= 1) $
+                   pPrintPrec level 0 f <+> pPrintPrec level 1 e
+        Case e alts -> hang (text "case" <+> pPrintPrec level prec e <+> text "of") 2
+                       (vcat (map pPrintAlt alts))
+      where
+        pPrintAlt (p, e) = pPrint p <+> text "->" <+> pPrint e
+
+instance (Pretty a) => Pretty (Tagged a tag) where
+    pPrintPrec level prec = pPrintPrec level prec . unTag
