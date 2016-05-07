@@ -4,45 +4,59 @@ import Language.HM.Syntax
 import Control.Unification
 import Data.Functor.Fixedpoint
 
-import Text.Trifecta
-import Text.Trifecta.Indentation
+import Text.Parsec hiding (space)
+import Text.Parsec.Layout
 
 import Control.Monad (void)
 import Data.Char
 import Data.List (sort, nub)
+import qualified Data.Map as Map
 
-type IP = IndentationParserT Token Parser
+type Parser = Parsec String LayoutEnv
 
-data Decl tag = DataDef DCon (UTerm Ty0 String)
+data Decl tag = DataDef DCon PolyTy
               | VarDef Var (Term tag)
               deriving Show
 
-decl :: IP [Decl ()]
+decl :: Parser [Decl ()]
 decl = fmap concat . many $
-       choice [ map ppDataDef <$> dataDef
+       choice [ mapM ppDataDef =<< dataDef
               , (:[]) . uncurry VarDef <$> binding
               ]
   where
-    ppDataDef (dcon, _, ty) = DataDef dcon ty
+    ppDataDef (dcon, tvs, ty) = do
+        let tvids = Map.fromList $ tvs `zip` [0..]
+            tv a = maybe (fail "Unsupported: existential type variables") return $
+                   Map.lookup a tvids
+            walk (UTerm (TApp tcon ts)) = UTerm <$> TApp tcon <$> traverse walk ts
+            walk (UVar a) = UVar <$> tv a
+        ty' <- walk ty
+        return $ DataDef dcon ty'
 
-conName :: IP String
+conName :: Parser String
 conName = (<?> "constructor name") $
-          token $ (:) <$> upper <*> many alphaNum
+          spaced $ (:) <$> upper <*> many alphaNum
 
-varName :: IP String
+varName :: Parser String
 varName = (<?> "variable name") $ try $ do
-    s <- token $ (:) <$> lower <*> many alphaNum
+    s <- spaced $ (:) <$> lower <*> many alphaNum
     if s `elem` ["let", "in", "case", "of"]
       then unexpected $ unwords ["reserved word", show s]
       else return s
 
-tag :: IP a -> IP (Tagged a ())
+tag :: Parser a -> Parser (Tagged a ())
 tag p = Tagged () <$> p
 
-kw :: String -> IP ()
-kw = void . symbol
+kw :: String -> Parser ()
+kw = void . spaced . string
 
-tyPart :: IP (UTerm Ty0 String)
+parens :: Parser a -> Parser a
+parens = between (spaced lparen) (spaced rparen)
+  where
+    lparen = char '('
+    rparen = char ')'
+
+tyPart :: Parser (UTerm Ty0 String)
 tyPart = choice [ parens ty
                 , UVar <$> varName
                 , UTerm <$> (TApp <$> conName <*> pure [])
@@ -51,7 +65,7 @@ tyPart = choice [ parens ty
 tyFun :: UTerm Ty0 a -> UTerm Ty0 a -> UTerm Ty0 a
 tyFun t u = UTerm $ TApp "Fun" [t, u]
 
-ty :: IP (UTerm Ty0 String)
+ty :: Parser (UTerm Ty0 String)
 ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
   where
     tyPart' = choice [ parens ty
@@ -59,7 +73,7 @@ ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
                      , UTerm <$> (TApp <$> conName <*> many tyPart)
                      ]
 
-dataDef :: IP [(DCon, [String], UTerm Ty0 String)]
+dataDef :: Parser [(DCon, [String], UTerm Ty0 String)]
 dataDef = do
     ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` kw "|"
     let t = UTerm $ TApp tname $ map UVar params
@@ -72,10 +86,10 @@ dataDef = do
 distinct :: (Ord a) => [a] -> Bool
 distinct xs = let xs' = sort xs in nub xs' == xs'
 
-term :: IP (Term ())
-term = chainl1 (localIndentation Ge atom) (spaces >> return (\x y -> Tagged () $ App x y))
+term :: Parser (Term ())
+term = chainl1 atom (return (\x y -> Tagged () $ App x y))
   where
-    atom = choice [ parens $ ignoreAbsoluteIndentation term
+    atom = choice [ parens term
                   , tag $ letBlock
                   , tag $ caseBlock
                   , tag $ Var <$> varName
@@ -89,12 +103,10 @@ term = chainl1 (localIndentation Ge atom) (spaces >> return (\x y -> Tagged () $
 
     alt = (,) <$> (pat <* kw "->") <*> term
 
-binding :: IP (Var, Term ())
--- binding = localTokenMode (const Ge) $
---           (,) <$> (varName <* kw "=") <*> (ignoreAbsoluteIndentation term)
-binding = localTokenMode (const Gt) $ (,) <$> (varName <* kw "=") <*> localTokenMode (const Gt) term
+binding :: Parser (Var, Term ())
+binding = (,) <$> (varName <* kw "=") <*> term
 
-pat :: IP (Pat ())
+pat :: Parser (Pat ())
 pat = (<?> "pattern") $
       choice [ parens pat
              , tag $ PVar <$> varName
@@ -102,16 +114,16 @@ pat = (<?> "pattern") $
              , tag $ PCon <$> conName <*> many pat
              ]
 
-iblock_ :: IP x -> IP a -> IP [a]
+iblock_ :: Parser x -> Parser a -> Parser [a]
 iblock_ = iblock (const id)
 
-iblock :: (a -> [b] -> c) -> IP a -> IP b -> IP c
+iblock :: (a -> [b] -> c) -> Parser a -> Parser b -> Parser c
 iblock f header body = do
-    -- x <- ignoreAbsoluteIndentation header
     x <- header
-    -- ys <- absoluteIndentation $ many body
-    ys <- localTokenMode (const Gt) $ many body
+    ys <- laidout body
     return $ f x ys
+
+trim = reverse . dropWhile (== '\n') . reverse
 
 s1 = unlines [ "data List a"
              , "  = Nil"
@@ -119,8 +131,8 @@ s1 = unlines [ "data List a"
              ]
 
 s2 = unlines [ "map = \\f -> \\xs -> case xs of"
-             , "   Nil -> Nil"
-             , "   Cons x xs -> Cons (f x) (map f xs)"
+             , " Nil -> Nil"
+             , " Cons x xs -> Cons (f x) (map f xs)"
              ]
 
 s2' = unlines [ "map = \\f -> case xs of"
@@ -136,7 +148,5 @@ s3 = unlines [ "map = f g"
              , "foo = q"
              ]
 
-runIP :: IP a -> String -> Result a
-runIP p = parseString p' mempty
-  where
-    p' = evalIndentationParserT p $ mkIndentationState 1 infIndentation True Eq
+run :: Parser a -> String -> Either ParseError a
+run p = runParser p defaultLayoutEnv "" . trim
