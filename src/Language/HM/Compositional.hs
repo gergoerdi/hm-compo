@@ -84,6 +84,7 @@ unifyTypings mcs = do
     return $ Map.unions mcs
 
 unifyMany :: [MTy s] -> M s (MTy s)
+unifyMany [] = UVar <$> freeVar
 unifyMany [t] = return t
 unifyMany (t:ts) = do
     runIdentityT $ foldM (=:=) t ts
