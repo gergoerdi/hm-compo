@@ -38,12 +38,6 @@ run :: Map DCon PolyTy -> [(Var, Term tag)] -> Doc
 run dataCons bindings = runSTBinding $ runM dataCons $ do
     tyCheckBinds bindings $ \mc -> do
         pvars <- asks polyVars
-        let app Nothing = return Nothing
-            app (Just (mc :- t)) = do
-                mc <- runIdentityT $ applyBindingsAll mc
-                t <- runIdentityT $ applyBindings t
-                return $ Just $ mc :- t
-        pvars <- traverse app pvars
         let monos = [ (name, t) | (name, Just (mc :- t)) <- Map.toList pvars ]
         tys <- zip (map fst monos) <$> (runIdentityT $ applyBindingsAll . map snd $ monos)
         return $ vcat [ text name <+> dcolon <+> pPrint t
