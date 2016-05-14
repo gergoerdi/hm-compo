@@ -1,25 +1,82 @@
+{-# LANGUAGE RecordWildCards #-}
 module Language.HM.Parser where
 
+import Language.HM.Lexer
 import Language.HM.Syntax
 import Control.Unification
 import Data.Functor.Fixedpoint
 
-import Text.Parsec hiding (space)
-import Text.Parsec.Layout
+import Text.Parsec.Prim hiding (runP)
+import Text.Parsec.Error
+import Text.Parsec.Pos
+import Text.Parsec.Combinator
 
-import Control.Monad (void)
+import Control.Monad (void, guard)
 import Data.Char
 import Data.List (sort, nub)
 import qualified Data.Map as Map
 
-type Parser = Parsec String LayoutEnv
+data St = St{ colStack :: [Int] }
+
+startSt :: St
+startSt = St{ colStack = [0] } -- XX
+
+type Parser = Parsec [Token] St
+
+token' :: (Token -> Maybe a) -> Parser a
+token' = tokenPrim showTok nextPos
+  where
+    showTok (Word s) = show s
+    showTok (Symbol s) = show s
+    showTok (Newline _) = "newline"
+
+    nextPos pos t ts = pos -- TODO
+
+satisfy :: (String -> Bool) -> Parser String
+satisfy p = word (\s -> guard (p s) >> return s)
+
+word :: (String -> Maybe a) -> Parser a
+word p = token' $ \t -> case t of
+    Word s -> p s
+    _ -> Nothing
+
+newline :: Parser Int
+newline = token' $ \t -> case t of
+    Newline col -> return col
+    _ -> Nothing
+
+reserved :: String -> Parser ()
+reserved s = (<?> unwords ["keyword", show s]) $ void $ satisfy (== s)
+
+symbol :: String -> Parser ()
+symbol s = (<?> unwords ["symbol", show s]) $
+           token' $ \t -> case t of
+               Symbol s' | s' == s -> Just ()
+               _ -> Nothing
+
+conName :: Parser String
+conName = (<?> "constructor name") $ try $
+          satisfy $ \(c:_) -> isUpper c
+
+varName :: Parser String
+varName = (<?> "variable name") $ try $ do
+    s <- satisfy $ \(c:_) -> isLower c
+    if s `elem` ["data", "let", "in", "case", "of"]
+      then unexpected $ unwords ["reserved word", show s]
+      else return s
+
+parens :: Parser a -> Parser a
+parens = between lparen rparen
+  where
+    lparen = symbol "("
+    rparen = symbol ")"
 
 data Decl tag = DataDef DCon PolyTy
               | VarDef Var (Term tag)
               deriving Show
 
 decl :: Parser [Decl ()]
-decl = fmap concat . many $
+decl = fmap concat . vlist $
        choice [ mapM ppDataDef =<< dataDef
               , (:[]) . uncurry VarDef <$> binding
               ]
@@ -33,29 +90,6 @@ decl = fmap concat . many $
         ty' <- walk ty
         return $ DataDef dcon ty'
 
-conName :: Parser String
-conName = (<?> "constructor name") $
-          spaced $ (:) <$> upper <*> many alphaNum
-
-varName :: Parser String
-varName = (<?> "variable name") $ try $ do
-    s <- spaced $ (:) <$> lower <*> many alphaNum
-    if s `elem` ["let", "in", "case", "of"]
-      then unexpected $ unwords ["reserved word", show s]
-      else return s
-
-tag :: Parser a -> Parser (Tagged a ())
-tag p = Tagged () <$> p
-
-kw :: String -> Parser ()
-kw = void . spaced . string
-
-parens :: Parser a -> Parser a
-parens = between (spaced lparen) (spaced rparen)
-  where
-    lparen = char '('
-    rparen = char ')'
-
 tyPart :: Parser (UTerm Ty0 String)
 tyPart = choice [ parens ty
                 , UVar <$> varName
@@ -66,7 +100,7 @@ tyFun :: UTerm Ty0 a -> UTerm Ty0 a -> UTerm Ty0 a
 tyFun t u = UTerm $ TApp "Fun" [t, u]
 
 ty :: Parser (UTerm Ty0 String)
-ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
+ty = foldr1 tyFun <$> tyPart' `sepBy1` symbol "->"
   where
     tyPart' = choice [ parens ty
                      , UVar <$> varName
@@ -75,42 +109,60 @@ ty = foldr1 tyFun <$> tyPart' `sepBy1` kw "->"
 
 dataDef :: Parser [(DCon, [String], UTerm Ty0 String)]
 dataDef = do
-    ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` kw "|"
+    ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` symbol "|"
     let t = UTerm $ TApp tname $ map UVar params
         toDConTy = foldr tyFun t
     return [(dcon, params, dconTy) | (dcon, ts) <- dconSpecs, let dconTy = toDConTy ts]
   where
-    header = kw "data" *> ((,) <$> conName <*> many varName) <* kw "="
+    header = reserved "data" *> ((,) <$> conName <*> many varName) <* symbol "="
     dcon = (,) <$> conName <*> many tyPart
 
 distinct :: (Ord a) => [a] -> Bool
 distinct xs = let xs' = sort xs in nub xs' == xs'
 
+vlist :: Parser a -> Parser [a]
+vlist p = do
+    col <- newline
+    modifyState $ \st@St{..} -> st{ colStack = col:colStack }
+    let cont = try $ do
+            i <- newline
+            guard $ i == col
+    p `sepBy` cont
+
+multiline1 :: Parser a -> Parser [a]
+multiline1 p = do
+    St{ colStack = col:_ } <- getState
+    let cont = try $ do
+            i <- newline
+            guard $ i > col
+    concat <$> many1 p `sepBy1` cont
+
 term :: Parser (Term ())
-term = chainl1 atom (return (\x y -> Tagged () $ App x y))
+term = foldl1 (\x y -> Tagged () $ App x y) <$>
+       multiline1 atom
   where
     atom = choice [ parens term
                   , tag $ letBlock
                   , tag $ caseBlock
                   , tag $ Var <$> varName
                   , tag $ Con <$> conName
-                  , tag $ Lam <$> (kw "\\" *> varName <* kw "->") <*> term
+                  , tag $ Lam <$> (symbol "\\" *> varName <* symbol "->") <*> term
                   ]
 
-    letBlock = Let <$> iblock_ (kw "let") binding <*> (kw "in" *> term)
+    letBlock = Let <$> iblock_ (reserved "let") binding <*> (reserved "in" *> term)
 
-    caseBlock = iblock Case (kw "case" *> term <* kw "of") alt
+    caseBlock = iblock Case (reserved "case" *> term <* reserved "of") alt
 
-    alt = (,) <$> (pat <* kw "->") <*> term
+    alt = (,) <$> (pat <* symbol "->") <*> term
 
 binding :: Parser (Var, Term ())
-binding = (,) <$> (varName <* kw "=") <*> term
+binding = (,) <$> (varName <* symbol "=") <*> term
 
 pat :: Parser (Pat ())
 pat = (<?> "pattern") $
       choice [ parens pat
              , tag $ PVar <$> varName
-             , tag $ kw "_" *> pure PWild
+             , tag $ symbol "_" *> pure PWild
              , tag $ PCon <$> conName <*> many pat
              ]
 
@@ -119,34 +171,31 @@ iblock_ = iblock (const id)
 
 iblock :: (a -> [b] -> c) -> Parser a -> Parser b -> Parser c
 iblock f header body = do
+    St{ colStack = col:_ } <- getState
     x <- header
-    ys <- laidout body
+    let startInline = do
+            y <- body
+            ys <- option [] startNewline
+            return $ y:ys
+        startNewline = do
+            i <- try $ do
+                i <- newline
+                guard $ i > col
+                return i
+            modifyState $ \st@St{..} -> st{ colStack = i:colStack }
+            let cont = try $ do
+                    i' <- newline
+                    guard $ i' == i
+            ys <- body `sepBy` cont
+            modifyState $ \st@St{..} -> st{ colStack = tail colStack }
+            return ys
+    ys <- startNewline <|> startInline
     return $ f x ys
 
-trim = reverse . dropWhile (== '\n') . reverse
+tag :: (Functor f) => f a -> f (Tagged a ())
+tag = fmap $ Tagged ()
 
-s1 = unlines [ "data List a"
-             , "  = Nil"
-             , "  | Cons a (List a)"
-             ]
-
-s2 = unlines [ "map = \\f -> \\xs -> case xs of"
-             , " Nil -> Nil"
-             , " Cons x xs -> Cons (f x) (map f xs)"
-             ]
-
-s2' = unlines [ "map = \\f -> case xs of"
-              , "  Nil -> Nil"
-              ]
-
-s4 = unlines [ "\\f -> \\x -> case xs of"
-             , " Nil -> Nil"
-             ]
-
-s3 = unlines [ "map = f g"
-             , " x"
-             , "foo = q"
-             ]
-
-run :: Parser a -> String -> Either ParseError a
-run p = runParser p defaultLayoutEnv "" . trim
+runP :: Parser a -> String -> Either ParseError a
+runP p s = case tokenize s of
+    Nothing -> Left $ newErrorMessage (Message "Tokenization failed") $ initialPos ""
+    Just ts -> runParser p startSt "" ts
