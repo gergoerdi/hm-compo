@@ -1,0 +1,9 @@
+data List a = Nil | Cons a (List a)
+
+map = \f -> \xs -> case xs of
+  Nil -> Nil
+  Cons x xs -> Cons (f x) (map f xs)
+
+foldr = \f -> \y -> \xs -> case xs of
+  Nil -> y
+  Cons x xs -> f x (foldr f y xs)
