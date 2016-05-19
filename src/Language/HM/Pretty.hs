@@ -24,17 +24,20 @@ type Ppr v = Staged [v] (v -> Doc)
 pprVar :: v -> Ppr v Doc
 pprVar x = Pair (Constant [x]) (asks ($ x))
 
-pprType :: Rational -> UTerm Ty0 v -> Ppr v Doc
-pprType = go
+pprType0 :: Rational -> Ty0 (UTerm Ty0 v) -> Ppr v Doc
+pprType0 = go
   where
-    go p t0@(UTerm t) = case t of
-        TApp "Fun" [t, u] -> (\ t u -> par 1 $ t <+> text "->" <+> u) <$> go 1 t <*> go 0 u
+    go p t = case t of
+        TApp "Fun" [t, u] -> (\ t u -> par 1 $ t <+> text "->" <+> u) <$> pprType 1 t <*> pprType 0 u
         TApp tcon [] -> pure $ text tcon
-        TApp tcon targs -> (\ts -> par 2 $ text tcon <+> hsep ts) <$> traverse (go 2) targs
+        TApp tcon targs -> (\ts -> par 2 $ text tcon <+> hsep ts) <$> traverse (pprType 2) targs
       where
         par i | p >= i = parens
               | otherwise = id
-    go p (UVar x) = pprVar x
+
+pprType :: Rational -> UTerm Ty0 v -> Ppr v Doc
+pprType p (UTerm t) = pprType0 p t
+pprType p (UVar x) = pprVar x
 
 runPpr :: (Ord v) => Ppr v a -> a
 runPpr (Pair (Constant tvars) fill) =
@@ -50,7 +53,7 @@ niceTVars = fmap text $
 instance Pretty Ty where
     pPrintPrec level prec t = pPrintPrec level prec (unfreeze t :: UTerm Ty0 Void)
 
-instance (Eq v, Ord v) => Pretty (UTerm Ty0 v) where
+instance (Ord v) => Pretty (UTerm Ty0 v) where
     pPrintPrec level prec t = runPpr $ pprType prec t
 
 instance Pretty (PatF String String a) where

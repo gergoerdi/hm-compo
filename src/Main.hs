@@ -35,15 +35,16 @@ main = do
     let result = prettyTops $ runCompo dataDefs' varDefs
     print result
 
-    let result = prettyTops $ runLinear dataDefs' varDefs
-    print result
+    -- let result = prettyTops $ runLinear dataDefs' varDefs
+    -- print result
 
-prettyTops :: [(Var, PolyTy)] -> Doc
-prettyTops vars = vcat [ text name <+> dcolon <+> pPrint t
-                       | (name, t) <- vars
-                       ]
+prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
+prettyTops (Left err) = err
+prettyTops (Right vars) = vcat [ text name <+> dcolon <+> pPrint t
+                               | (name, t) <- vars
+                               ]
 
-runLinear :: Map DCon PolyTy -> [(Var, Term tag)] -> [(Var, PolyTy)]
+runLinear :: Map DCon PolyTy -> [(Var, Term tag)] -> Either Doc [(Var, PolyTy)]
 runLinear dataCons bindings = runSTBinding $ Linear.runM dataCons $ do
     Linear.tyCheckBinds bindings $
       asks $ map freeze . Map.toList . Linear.polyVars
@@ -54,7 +55,7 @@ runLinear dataCons bindings = runSTBinding $ Linear.runM dataCons $ do
                       , show name, "as", show mty
                       ]
 
-runCompo :: Map DCon PolyTy -> [(Var, Term tag)] -> [(Var, PolyTy)]
+runCompo :: Map DCon PolyTy -> [(Var, Term tag)] -> Either Doc [(Var, PolyTy)]
 runCompo dataCons bindings = runSTBinding $ Compo.runM dataCons $ do
     Compo.tyCheckBinds bindings $ \mc -> do
         pvars <- asks Compo.polyVars

@@ -12,10 +12,15 @@ module Language.HM.Compositional where
 import Language.HM.Syntax
 import Language.HM.Remap
 import Language.HM.Meta
+import Language.HM.Error
+import Language.HM.Pretty
 
 import Control.Unification
 import Control.Unification.STVar
 import Control.Unification.Types
+
+import Text.PrettyPrint
+import Text.PrettyPrint.HughesPJClass
 
 import Data.Foldable
 import Data.Functor.Fixedpoint
@@ -42,16 +47,7 @@ data Typing0 var ty = Map var ty :- ty
 type Typing = Typing0 Var Ty
 type MTyping s = Typing0 Var (MTy s)
 
-data Err0 t v = UErr (UFailure t v)
-              | Err String
-
-deriving instance (Show v, Show (t (UTerm t v))) => Show (Err0 t v)
-
 type Err s = Err0 Ty0 (MVar s)
-
-instance Fallible t v (Err0 t v) where
-    occursFailure v t = UErr $ occursFailure v t
-    mismatchFailure t u = UErr $ mismatchFailure t u
 
 data Ctx s = Ctx{ polyVars :: Map Var (Maybe (MTyping s))
                 , dataCons :: Map DCon PolyTy
@@ -187,8 +183,8 @@ tyCheckBinds binds body = do
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
 
-runM :: Map DCon PolyTy -> M s a -> STBinding s a
+runM :: Map DCon PolyTy -> M s a -> STBinding s (Either Doc a)
 runM dataCons act = do
     let polyVars = mempty
     (x, _, _) <- runRWST (runExceptT $ unM act) Ctx{..} 0
-    return $ either (error . show) id x
+    return $ either (Left . pPrint) Right x
