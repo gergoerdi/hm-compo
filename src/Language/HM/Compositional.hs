@@ -5,6 +5,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards, TupleSections #-}
+{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 
 module Language.HM.Compositional where
 
@@ -35,7 +36,8 @@ import Data.Graph
 import Data.Maybe
 import Data.Function
 
-data Typing0 var ty = Map var ty :- ty deriving Show
+data Typing0 var ty = Map var ty :- ty
+                    deriving (Show, Functor, Foldable, Traversable)
 
 type Typing = Typing0 Var Ty
 type MTyping s = Typing0 Var (MTy s)
@@ -94,7 +96,7 @@ zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
 
 instantiateTyping :: MTyping s -> M s (MTyping s)
-instantiateTyping = error "instantiateTyping"
+instantiateTyping = runIdentityT . freshenAll
 
 instance MonadError (Err s) (M s) where
     throwError = M . throwError

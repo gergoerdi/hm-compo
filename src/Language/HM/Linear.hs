@@ -72,19 +72,13 @@ instance MonadError (Err s) (M s) where
 freshTVar :: M s TVar
 freshTVar = get <* modify succ
 
-generalise :: (Traversable t) => t (MTy s) -> M s (t (MPolyTy s))
-generalise tys = do
+generalizeHere :: (Traversable t) => t (MTy s) -> M s (t (MPolyTy s))
+generalizeHere tys = do
     tys <- runIdentityT $ applyBindingsAll tys
     tysInScope <- asks $ Map.elems . polyVars
     let tvsInScope = polyMetaVars tysInScope
         free = (`Set.notMember` tvsInScope)
-    let Pair (Constant mvars) fill = traverse (walk free) tys
-    runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
-  where
-    walk :: (MVar s -> Bool) -> MTy s -> Remap (MVar s) TVar (MPolyTy s)
-    walk free (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse (walk free) ts)
-    walk free (UVar v) | free v = UVar <$> (Left <$> remap v)
-                       | otherwise = UVar <$> pure (Right v)
+    generalizeN freshTVar free tys
 
 tyCheck :: MTy s -> Term tag -> M s ()
 tyCheck t e = case unTag e of
@@ -128,7 +122,7 @@ tyCheckBinds binds body = do
         tvs <- traverse (const $ UVar <$> freeVar) bs
         withVars (Map.fromList $ zip (map fst bs) (map mono tvs)) $
           zipWithM_ tyCheck tvs (map snd bs)
-        ts <- generalise tvs
+        ts <- generalizeHere tvs
         withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
     go [] = body
 
