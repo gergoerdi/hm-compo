@@ -38,7 +38,7 @@ tFunArgs = go
     go (UTerm (TApp "Fun" [t, u])) = case go u of (ts, t0) -> (t:ts, t0)
     go t = ([], t)
 
-data Tagged a tag = Tagged{ getTag :: tag, unTag :: a } deriving Show
+data Tagged a tag = Tagged{ getTag :: tag, unTag :: a } deriving (Show, Functor)
 
 data TermF dcon var tag
     = Var var

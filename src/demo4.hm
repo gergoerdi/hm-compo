@@ -1,0 +1,27 @@
+data Maybe a = Nothing | Just a
+data Bool = True | False
+data Pair a b = Pair a b
+
+-- not = \b -> case b of
+--     True -> False
+--     False -> True
+
+-- isJust = \m -> case m of
+--     Nothing -> False
+--     Just _ -> True
+
+-- f = \x -> not (not (Just x))
+
+data List a = Nil | Cons a (List a)
+
+-- f = \x -> Cons x x
+
+-- map = \f -> \xs -> case xs of
+--     Nil -> Nil
+--     Cons x xs -> Cons (f x) (map f xs)
+
+-- foldr = \f -> \y -> \xs -> case xs of
+--   Nil -> y
+--   Cons x xs -> f x (foldr f y xs)
+
+fix = \f -> let x = f x in Pair x (f x)

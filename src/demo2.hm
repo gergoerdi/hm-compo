@@ -1,0 +1,13 @@
+data Maybe a = Nothing | Just a
+data Bool = True | False
+data Pair a b = Pair a b
+
+not = \b -> case b of
+    True -> False
+    False -> True
+
+isJust = \m -> case m of
+    Nothing -> False
+    Just _ -> True
+
+f = \x -> Pair (not x) (isJust x)

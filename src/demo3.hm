@@ -1,0 +1,6 @@
+data List a = Nil | Cons a (List a)
+
+map = case Nil of
+    Nil -> Nil
+    Cons x xs -> Cons x xs
+foo = foo

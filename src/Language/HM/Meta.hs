@@ -69,6 +69,24 @@ polyMetaVars = execWriter . traverse_ go
     go (UVar (Left a)) = pure ()
     go (UVar (Right v)) = tell $ Set.singleton v
 
+-- :: (BindingMonad t v m, Fallible t v e, MonadTrans em, Functor (em m), MonadError e (em m))
+-- => UTerm t v
+-- -> em m (UTerm t v)
+
+
+-- applyBindingsPoly :: (BindingMonad Ty0 (MVar s) m, Fallible Ty0 (MVar s) e,
+--                       MonadTrans em, MonadError e (em m))
+--                   => MPolyTy s -> em m (MPolyTy s)
+applyBindingsPoly :: (BindingMonad Ty0 (MVar s) m)
+                  => MPolyTy s -> m (MPolyTy s)
+applyBindingsPoly = go
+  where
+    go (UVar (Left a)) = UVar . Left <$> pure a
+    go (UVar (Right v)) = do
+        t <- lookupVar v
+        return $ maybe (UVar (Right v)) mono t
+    go (UTerm (TApp tcon ts)) = UTerm <$> TApp tcon <$> traverse go ts
+
 instantiateN :: (BindingMonad Ty0 (MVar s) m, Traversable t)
              => t (MPolyTy s) -> m (t (MTy s))
 instantiateN ty = do

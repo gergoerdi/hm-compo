@@ -29,7 +29,8 @@ pprErr err = case err of
     UErr (OccursFailure v t) ->
         header "Infinite type" <$> sequenceA [pprVar v, pprType 0 t]
     UErr (MismatchFailure t u) ->
-        header "Type mismatch" <$> sequenceA [pprType0 0 t, pprType0 0 u]
+        header "Type mismatch" <$> sequenceA [ (text "Expected:" <+>) <$> pprType0 0 t
+                                             , (text "Got:" <+>) <$> pprType0 0 u]
     Err s -> pure $ text s
   where
     header s = hang (text s <> colon) 4 . vcat

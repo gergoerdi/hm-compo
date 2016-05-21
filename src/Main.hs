@@ -23,20 +23,20 @@ import Data.Either (partitionEithers)
 
 main :: IO ()
 main = do
-    s <- readFile "demo2.hm"
-    decls <- case runP decl s of
+    s <- readFile "demo4.hm"
+    decls <- case runP "demo4.hm" decl s of
         Left err -> error $ show err
-        Right decls -> return decls
+        Right decls -> return $ decls
     let (dataDefs, varDefs) = partitionEithers $ map toEither decls
         dataDefs' = Map.fromList dataDefs
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    let result = prettyTops $ runCompo dataDefs' varDefs
-    print result
-
-    -- let result = prettyTops $ runLinear dataDefs' varDefs
+    -- let result = prettyTops $ runCompo dataDefs' varDefs
     -- print result
+
+    let result = prettyTops $ runLinear dataDefs' varDefs
+    print result
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
@@ -44,10 +44,16 @@ prettyTops (Right vars) = vcat [ text name <+> dcolon <+> pPrint t
                                | (name, t) <- vars
                                ]
 
-runLinear :: Map DCon PolyTy -> [(Var, Term tag)] -> Either Doc [(Var, PolyTy)]
+runLinear :: (Pretty tag)
+          => Map DCon PolyTy
+          -> [(Var, Term tag)]
+          -> Either Doc [(Var, PolyTy)]
 runLinear dataCons bindings = runSTBinding $ Linear.runM dataCons $ do
-    Linear.tyCheckBinds bindings $
-      asks $ map freeze . Map.toList . Linear.polyVars
+    polyVars <- Linear.tyCheckBinds bindings $ asks Linear.polyVars
+    -- runIdentityT $ forM (Map.toList polyVars) $ \(name, mty) -> do
+    --     mty <- applyBindings mty
+    --     return $ freeze (name, mty)
+    return $ map freeze . Map.toList $ polyVars
   where
     freeze (name, mty) = (name, fromMaybe (error err) $ freezePoly mty)
       where

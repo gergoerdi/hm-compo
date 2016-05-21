@@ -47,59 +47,62 @@ data Typing0 var ty = Map var ty :- ty
 type Typing = Typing0 Var Ty
 type MTyping s = Typing0 Var (MTy s)
 
-type Err s = Err0 Ty0 (MVar s)
+type Err tag s = Err0 Ty0 (MVar s)
 
 data Ctx s = Ctx{ polyVars :: Map Var (Maybe (MTyping s))
                 , dataCons :: Map DCon PolyTy
                 }
 
-newtype M s a = M{ unM :: ExceptT (Err s) (RWST (Ctx s) () Int (STBinding s)) a }
-              deriving (Functor, Applicative, Monad, MonadReader (Ctx s), MonadState Int)
+newtype M tag s a = M{ unM :: ExceptT (Err tag s) (RWST (Ctx s) () Int (STBinding s)) a }
+                  deriving (Functor, Applicative, Monad, MonadReader (Ctx s), MonadState Int)
 
-withMonoVar :: Var -> M s a -> M s a
+runFatal :: IdentityT (M tag s) a -> M tag s a
+runFatal = runIdentityT
+
+withMonoVar :: Var -> M tag s a -> M tag s a
 withMonoVar v = withMonoVars [v]
 
-withMonoVars :: [Var] -> M s a -> M s a
+withMonoVars :: [Var] -> M tag s a -> M tag s a
 withMonoVars vs = local $ \pc -> pc{ polyVars = Map.union newVars $ polyVars pc }
   where
     newVars = Map.fromList [(v, Nothing) | v <- vs]
 
-withPolyVars :: Map Var (MTyping s) -> M s a -> M s a
+withPolyVars :: Map Var (MTyping s) -> M tag s a -> M tag s a
 withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union (Just <$> vtys) $ polyVars pc }
 
 unzipTypings :: [Typing0 var ty] -> ([Map var ty], [ty])
 unzipTypings tps = unzip [(mc, t) | mc :- t <- tps]
 
-instance BindingMonad Ty0 (MVar s) (M s) where
+instance BindingMonad Ty0 (MVar s) (M tag s) where
     lookupVar = M . lift . lift . lookupVar
     freeVar = M . lift . lift $ freeVar
     newVar = M . lift . lift . newVar
     bindVar v = M . lift . lift . bindVar v
 
-unifyTypings :: [Map Var (MTy s)] -> M s (Map Var (MTy s))
-unifyTypings mcs = do
-    traverse_ unifyMany $ zipMaps mcs
-    return $ Map.unions mcs
+unifyTypings :: [Map Var (MTy s)] -> M tag s (Map Var (MTy s))
+unifyTypings mcs = runIdentityT $ do
+    traverse unifyMany $ zipMaps mcs
+    -- return $ Map.unions mcs
 
-unifyMany :: [MTy s] -> M s (MTy s)
-unifyMany [] = UVar <$> freeVar
+unifyMany :: [MTy s] -> IdentityT (M tag s) (MTy s)
+unifyMany [] = UVar <$> lift freeVar
 unifyMany [t] = return t
 unifyMany (t:ts) = do
-    runIdentityT $ foldM (=:=) t ts
+    foldM (=:=) t ts
     return t
 
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
 
-instantiateTyping :: MTyping s -> M s (MTyping s)
-instantiateTyping = runIdentityT . freshenAll
+instantiateTyping :: MTyping s -> M tag s (MTyping s)
+instantiateTyping = runFatal . freshenAll
 
-instance MonadError (Err s) (M s) where
+instance MonadError (Err tag s) (M tag s) where
     throwError = M . throwError
     catchError (M act) = M . catchError act . (unM .)
 
-tyInfer :: Term tag -> M s (MTyping s)
-tyInfer e = case unTag e of
+tyInfer :: Term tag -> M tag s (MTyping s)
+tyInfer (Tagged tag e) = case e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         case vt of
@@ -123,26 +126,26 @@ tyInfer e = case unTag e of
         mc2 :- u <- tyInfer e
         a <- UVar <$> freeVar
         mc <- unifyTypings [mc1, mc2]
-        runIdentityT $ (u ~> a) =:= t
+        runFatal $ (u ~> a) =:= t
         return $ mc :- a
     Case e as -> do
         mc0 :- t0 <- tyInfer e
         tps <- forM as $ \(pat, e) -> do
             mcPat :- tPat <- tyInferPat pat
-            tPat <- runIdentityT $ t0 =:= tPat
+            tPat <- runFatal $ t0 =:= tPat
             mc :- t <- withMonoVars (Map.keys mcPat) $ tyInfer e
             unifyTypings [mc, mcPat]
             let mc' = mc `Map.difference` mcPat
             return $ mc' :- t
         let (mcs, ts) = unzipTypings tps
         mc <- unifyTypings (mc0:mcs)
-        t <- unifyMany ts
+        t <- runFatal $ unifyMany ts
         return $ mc :- t
     Let binds e -> tyCheckBinds binds $ \mc0 -> do
         mc :- t <- tyInfer e
         return $ Map.union mc mc0 :- t
 
-tyInferPat :: Pat tag -> M s (MTyping s)
+tyInferPat :: Pat tag -> M tag s (MTyping s)
 tyInferPat pat = case unTag pat of
     PWild -> do
         t <- UVar <$> freeVar
@@ -161,10 +164,10 @@ tyInferPat pat = case unTag pat of
         tps <- traverse tyInferPat ps
         let (mcs, ts) = unzipTypings tps
         mc <- unifyTypings mcs
-        runIdentityT $ zipWithM_ (=:=) tArgs ts
+        runFatal $ zipWithM_ (=:=) tArgs ts
         return $ mc :- t
 
-tyCheckBinds :: [(Var, Term tag)] -> (Map Var (MTy s) -> M s a) -> M s a
+tyCheckBinds :: [(Var, Term tag)] -> (Map Var (MTy s) -> M tag s a) -> M tag s a
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
     go mempty (map flattenSCC $ stronglyConnComp g)
@@ -183,7 +186,7 @@ tyCheckBinds binds body = do
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
 
-runM :: Map DCon PolyTy -> M s a -> STBinding s (Either Doc a)
+runM :: Map DCon PolyTy -> M tag s a -> STBinding s (Either Doc a)
 runM dataCons act = do
     let polyVars = mempty
     (x, _, _) <- runRWST (runExceptT $ unM act) Ctx{..} 0

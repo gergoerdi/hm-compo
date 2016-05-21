@@ -21,16 +21,16 @@ data St = St{ colStack :: [Int] }
 startSt :: St
 startSt = St{ colStack = [0] } -- XX
 
-type Parser = Parsec [Token] St
+type Parser = Parsec [(SourcePos, Token)] St
 
 token' :: (Token -> Maybe a) -> Parser a
-token' = tokenPrim showTok nextPos
+token' = tokenPrim (showTok . snd) nextPos . (. snd)
   where
     showTok (Word s) = show s
     showTok (Symbol s) = show s
     showTok (Newline _) = "newline"
 
-    nextPos pos t ts = pos -- TODO
+    nextPos pos (pos', t) _ts = pos'
 
 satisfy :: (String -> Bool) -> Parser String
 satisfy p = word (\s -> guard (p s) >> return s)
@@ -75,7 +75,7 @@ data Decl tag = DataDef DCon PolyTy
               | VarDef Var (Term tag)
               deriving Show
 
-decl :: Parser [Decl ()]
+decl :: Parser [Decl SourcePos]
 decl = fmap concat . vlist $
        choice [ mapM ppDataDef =<< dataDef
               , (:[]) . uncurry VarDef <$> binding
@@ -137,10 +137,12 @@ multiline1 p = do
             guard $ i > col
     concat <$> many1 p `sepBy1` cont
 
-term :: Parser (Term ())
-term = foldl1 (\x y -> Tagged () $ App x y) <$>
-       multiline1 atom
+term :: Parser (Term SourcePos)
+term = foldl1 app <$> multiline1 atom
   where
+    app :: Term SourcePos -> Term SourcePos -> Term SourcePos
+    app f@(Tagged loc1 _) e@(Tagged loc2 _) = Tagged loc1 (App f e)
+
     atom = choice [ parens term
                   , tag $ letBlock
                   , tag $ caseBlock
@@ -155,10 +157,10 @@ term = foldl1 (\x y -> Tagged () $ App x y) <$>
 
     alt = (,) <$> (pat <* symbol "->") <*> term
 
-binding :: Parser (Var, Term ())
+binding :: Parser (Var, Term SourcePos)
 binding = (,) <$> (varName <* symbol "=") <*> term
 
-pat :: Parser (Pat ())
+pat :: Parser (Pat SourcePos)
 pat = (<?> "pattern") $
       choice [ parens pat
              , tag $ PVar <$> varName
@@ -192,10 +194,13 @@ iblock f header body = do
     ys <- startNewline <|> startInline
     return $ f x ys
 
-tag :: (Functor f) => f a -> f (Tagged a ())
-tag = fmap $ Tagged ()
+tag :: Parser a -> Parser (Tagged a SourcePos)
+tag p = do
+    pos <- getPosition
+    x <- p
+    return $ Tagged pos x
 
-runP :: Parser a -> String -> Either ParseError a
-runP p s = case tokenize s of
+runP :: SourceName -> Parser a -> String -> Either ParseError a
+runP sourceName p s = case tokenize sourceName s of
     Nothing -> Left $ newErrorMessage (Message "Tokenization failed") $ initialPos ""
     Just ts -> runParser p startSt "" ts

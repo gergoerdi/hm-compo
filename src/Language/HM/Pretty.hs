@@ -5,6 +5,7 @@ module Language.HM.Pretty where
 import Language.HM.Syntax
 import Language.HM.Remap
 
+import Text.Parsec.Pos
 import Control.Unification
 import Data.Void
 import Control.Monad.Reader
@@ -78,3 +79,10 @@ instance Pretty (TermF String String a) where
 
 instance (Pretty a) => Pretty (Tagged a tag) where
     pPrintPrec level prec = pPrintPrec level prec . unTag
+
+instance Pretty SourcePos where
+    pPrint src = hsep [ text (sourceName src)
+                      , parens coords <> colon
+                      ]
+      where
+        coords = hcat [int (sourceLine src), comma, int (sourceColumn src)]
