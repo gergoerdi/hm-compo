@@ -13,8 +13,9 @@ import Language.HM.Remap
 import Language.HM.Meta
 import Language.HM.Error
 import Language.HM.Pretty
+import Text.Parsec.Pos
 
-import Control.Unification
+-- import Control.Unification hiding ((=:=), (=~=))
 import Control.Unification.STVar
 import Control.Unification.Types
 
@@ -42,119 +43,103 @@ import Data.Function
 
 import Debug.Trace
 
-type Err loc s = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
+type Err s loc = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
 type UErr s = UFailure Ty0 (MVar s)
 
-data Ctx s = Ctx{ polyVars :: Map Var (MPolyTy s)
-                , dataCons :: Map DCon PolyTy
-                }
+data Ctx s loc = Ctx{ polyVars :: Map Var (MPolyTy s)
+                    , dataCons :: Map DCon PolyTy
+                    , loc :: (loc, Doc)
+                    }
 
-newtype M loc s a = M{ unM :: ExceptT (Err loc s) (RWST (Ctx s) () Int (STBinding s)) a }
+newtype M s loc a = M{ unM :: ExceptT (Err s loc) (RWST (Ctx s loc) () Int (STBinding s)) a }
                   deriving ( Functor, Applicative, Monad
-                           , MonadReader (Ctx s)
+                           , MonadReader (Ctx s loc)
                            , MonadState Int
-                           , MonadError (Err loc s)
+                           -- , MonadError (Err s loc)
                            )
 
-infix 4 =::=
-(=::=) :: (BindingMonad t v m, Fallible t v e, MonadTrans em, Functor (em m), MonadError e (em m))
-       => UTerm t v
-       -> UTerm t v
-       -> em m (UTerm t v)
-(=::=) = unifyOccurs
+instance MonadError (Err0 Ty0 (MVar s)) (M s loc) where
+    throwError err = do
+        loc <- asks loc
+        M . throwError $ Tagged loc err
+    catchError act handler = M $ catchError (unM act) (unM . handler . unTag)
 
-runFatal :: (Pretty b)
-         => Tagged b loc
-         -> ExceptT (UErr s) (STBinding s) (MTy s)
-         -> M loc s (MTy s)
-runFatal (Tagged loc src) act = do
-    result <- M . lift . lift $ runExceptT $ applyBindings =<< act
-    case result of
-        Left err -> do
-            err' <- runInternal $ case err of
-                OccursFailure v t ->
-                    OccursFailure v <$> applyBindings t
-                MismatchFailure t u ->
-                    MismatchFailure <$> applyBindingsAll t <*> applyBindingsAll u
-            throwError $ Tagged (loc, pPrint src) $ UErr err'
-        Right x -> return x
+infix 4 =:=
+(=:=) :: MTy s -> MTy s -> M s loc (MTy s)
+t =:= u = do
+    sub <- t =~= u
+    return $ subst sub t
 
-runInternal :: ExceptT (UErr s) (STBinding s) a -> M loc s a
-runInternal act = do
-    result <- M . lift . lift $ runExceptT act
-    case result of
-        Left err -> error "Internal error"
-        Right x -> return x
+infix 4 =~=
+(=~=) :: MTy s -> MTy s -> M s loc (Subst Ty0 (MVar s))
+t =~= u = case unify t u of
+    Left uerr -> throwError $ UErr t u uerr
+    Right sub -> return sub
 
-withVar :: Var -> MPolyTy s -> M loc s a -> M loc s a
+withVar :: Var -> MPolyTy s -> M s loc a -> M s loc a
 withVar v ty = local $ \pc -> pc{ polyVars = Map.insert v ty $ polyVars pc }
 
-withVars :: Map Var (MPolyTy s) -> M loc s a -> M loc s a
+withVars :: Map Var (MPolyTy s) -> M s loc a -> M s loc a
 withVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
 
-instance BindingMonad Ty0 (MVar s) (M loc s) where
-    lookupVar = M . lift . lift . lookupVar
-    freeVar = M . lift . lift $ freeVar
-    newVar = M . lift . lift . newVar
-    bindVar v = M . lift . lift . bindVar v
+withLoc :: (Pretty src) => Tagged src loc -> M s loc a -> M s loc a
+withLoc (Tagged loc src) = local $ \pc -> pc{ loc = (loc, pPrint src) }
 
-freshTVar :: M loc s TVar
+instance MonadUnify Ty0 (MVar s) (M s loc) where
+    freshVar = M . lift . lift $ freeVar
+
+freshTVar :: M s loc TVar
 freshTVar = get <* modify succ
 
--- generalizeHere :: (Traversable t) => t (MTy s) -> M loc s (t (MPolyTy s))
-generalizeHere :: [MTy s] -> M loc s [MPolyTy s]
+generalizeHere :: [MTy s] -> M s loc [MPolyTy s]
 generalizeHere tys = do
-    tys <- runInternal $ applyBindingsAll tys
-    traceShow tys $ return ()
-    -- tys <- traverse semiprune tys
     tysInScope <- asks $ Map.elems . polyVars
-    tysInScope <- traverse applyBindingsPoly tysInScope
     let tvsInScope = polyMetaVars tysInScope
         free = (`Set.notMember` tvsInScope)
-
-    pvars <- asks polyVars
-    traceShow pvars $ return ()
-
     generalizeN freshTVar free tys
-    -- generalizeN freshTVar (const False) tys
 
-tyCheck :: MTy s -> Term loc -> M loc s (MTy s)
-tyCheck t le@(Tagged loc e) = case e of
+tyCheck :: MTy s -> Term loc -> M s loc (MTy s)
+tyCheck t le@(Tagged _ e) = withLoc le $ case e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         vt <- case vt of
-            Nothing -> throwError $ Tagged (loc, pPrint e) $
-                         Err $ unwords ["Not in scope:", show v]
+            Nothing -> throwError . Err $
+                         unwords ["Not in scope:", show v]
             Just t -> instantiate t
-        runFatal le $ vt =::= t
+        vt =:= t
     Con dcon -> do
         ct <- asks $ Map.lookup dcon . dataCons
         ct <- case ct of
-            Nothing -> throwError $ Tagged (loc, pPrint e) $
-                         Err $ unwords ["Unknown data constructor:", show dcon]
+            Nothing -> throwError . Err $
+                         unwords ["Unknown data constructor:", show dcon]
             Just ct -> instantiate $ thaw ct
-        runFatal le $ ct =::= t
+        ct =:= t
     Lam v e -> do
-        t0 <- UVar <$> freeVar
+        t0 <- UVar <$> freshVar
         withVar v (mono t0) $ do
             u <- tyInfer e
-            runFatal le $ t0 ~> u =::= t
-    App f e -> do
-        t1 <- tyInfer f
-        t2 <- tyInfer e
-        runFatal le $ t1 =::= t2 ~> t
-        -- runInternal $ applyBindings t
-        return t
-    Case e as -> do
-        t0 <- tyInfer e
-        ts <- forM as $ \(pat, e) -> do
-            tyCheckPat t0 pat $ tyCheck t e
-        return $ case ts of
-            (t':_) -> t'
-            _ -> t
-    Let binds e -> tyCheckBinds binds $ tyCheck t e
+            t0 ~> u =:= t
+    -- App f e -> do
+    --     t1 <- tyInfer f
+    --     t2 <- tyInfer e
+    --     runFatal le $ t1 =:= t2 ~> t
+    --     t1 <- runInternal $ applyBindings t1
+    --     t2 <- runInternal $ applyBindings t2
+    --     t <- runInternal $ applyBindings t
+    --     traceShow (t1, t2, t) $ return ()
+    --     -- runInternal $ applyBindings t
+    --     return t
+    -- Case e as -> do
+    --     t0 <- tyInfer e
+    --     ts <- forM as $ \(pat, e) -> do
+    --         tyCheckPat t0 pat $ tyCheck t e
+    --     return $ case ts of
+    --         (t':_) -> t'
+    --         _ -> t
+    -- Let binds e -> tyCheckBinds binds $ tyCheck t e
 
-tyCheckBinds :: [(Var, Term loc)] -> M loc s a -> M loc s a
+{-
+tyCheckBinds :: [(Var, Term loc)] -> M s loc a -> M s loc a
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
     go (map flattenSCC $ stronglyConnComp g)
@@ -166,38 +151,47 @@ tyCheckBinds binds body = do
         ts <- generalizeHere tvs
         withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
     go [] = body
+-}
 
-tyCheckPat :: MTy s -> Pat loc -> M loc s a -> M loc s a
+tyCheckPat :: MTy s -> Pat loc -> M s loc a -> M s loc a
 tyCheckPat t lp@(Tagged tag p) body = case p of
     PWild -> body
     PVar v -> withVar v (mono t) body
     PCon dcon ps -> do
         ct <- asks $ Map.lookup dcon . dataCons
         ct <- case ct of
-            Nothing -> throwError $ Tagged (tag, pPrint p) $
-                         Err $ unwords ["Unknown data constructor:", show dcon]
+            Nothing -> throwError . Err $
+                         unwords [ "Unknown data constructor:"
+                                 , show dcon
+                                 ]
             Just ct -> instantiate $ thaw ct
         let (tArgs, t0) = tFunArgs ct
-        runFatal lp $ t =::= t0
+        sub <- t =~= t0
         unless (length ps == length tArgs) $
-          throwError $ Tagged (tag, pPrint p) $
-            Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs]
+          throwError . Err $
+            unwords [ "Bad pattern arity:"
+                    , show $ length ps
+                    , show $ length tArgs
+                    ]
+        tArgs <- return $ fmap (subst sub) tArgs
         go (zip tArgs ps)
       where
         go ((t, p):tps) = tyCheckPat t p $ go tps
         go [] = body
 
-tyInfer :: Term loc -> M loc s (MTy s)
+tyInfer :: Term loc -> M s loc (MTy s)
 tyInfer e = do
-    ty <- UVar <$> freeVar
+    ty <- UVar <$> freshVar
     tyCheck ty e
 
 runM :: (Pretty loc)
      => Map DCon PolyTy
-     -> M loc s a
+     -> M s loc a
      -> STBinding s (Either Doc a)
 runM dataCons act = do
     let polyVars = mempty
+        pos = initialPos "foo"
+        -- loc = (pos, empty)
     (x, _, _) <- runRWST (runExceptT $ unM act) Ctx{..} 0
     return $ either (Left . pPrintErr) Right $ x
   where

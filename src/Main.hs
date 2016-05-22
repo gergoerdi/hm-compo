@@ -1,9 +1,9 @@
 import Language.HM.Syntax
 import Language.HM.Pretty
 import qualified Language.HM.Linear as Linear
-import Language.HM.Compositional (Typing0((:-)))
-import qualified Language.HM.Compositional as Compo
-import Language.HM.Meta ((~>), freezePoly, generalize)
+-- import Language.HM.Compositional (Typing0((:-)))
+-- import qualified Language.HM.Compositional as Compo
+import Language.HM.Meta (freezePoly, generalize)
 import Language.HM.Parser
 
 import Control.Unification
@@ -21,6 +21,19 @@ import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Either (partitionEithers)
 
+main :: IO ()
+main = do
+    s <- readFile "demo5.hm"
+    es <- case runP "demo5.hm" (vlist term) s of
+        Left err -> error $ show err
+        Right terms -> return terms
+    let result = runSTBinding $ Linear.runM mempty $ do
+            ts <- mapM Linear.tyInfer es
+            return $ map pPrint ts
+
+    print result
+
+{-
 main :: IO ()
 main = do
     s <- readFile "demo4.hm"
@@ -60,7 +73,8 @@ runLinear dataCons bindings = runSTBinding $ Linear.runM dataCons $ do
         err = unwords [ "Ugh! Type variables escaped in type of"
                       , show name, "as", show mty
                       ]
-
+-}
+{-
 runCompo :: Map DCon PolyTy -> [(Var, Term tag)] -> Either Doc [(Var, PolyTy)]
 runCompo dataCons bindings = runSTBinding $ Compo.runM dataCons $ do
     Compo.tyCheckBinds bindings $ \mc -> do
@@ -78,6 +92,7 @@ runCompo dataCons bindings = runSTBinding $ Compo.runM dataCons $ do
         err = unwords [ "Ugh! Type variables escaped in type of"
                       , show name, "as", show mty
                       ]
+-}
 
 dcolon :: Doc
 dcolon = text "::"

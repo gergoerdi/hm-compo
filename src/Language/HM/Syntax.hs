@@ -32,6 +32,11 @@ type Ty = Fix Ty0
 type TVar = Int
 type PolyTy = UTerm Ty0 TVar
 
+(~>) :: UTerm Ty0 v -> UTerm Ty0 v -> UTerm Ty0 v
+t ~> u = UTerm $ TApp "Fun" [t, u]
+
+infixr 7 ~>
+
 tFunArgs :: UTerm Ty0 v -> ([UTerm Ty0 v], UTerm Ty0 v)
 tFunArgs = go
   where

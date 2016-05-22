@@ -24,4 +24,6 @@ data List a = Nil | Cons a (List a)
 --   Nil -> y
 --   Cons x xs -> f x (foldr f y xs)
 
-fix = \f -> let x = f x in Pair x (f x)
+data Pair3 a b c = Pair3 a b c
+
+fix = \f -> let x = f x in x -- Pair3 (f x) x x
