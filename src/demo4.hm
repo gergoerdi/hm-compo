@@ -26,4 +26,4 @@ data List a = Nil | Cons a (List a)
 
 data Pair3 a b c = Pair3 a b c
 
-fix = \f -> let x = f x in x -- Pair3 (f x) x x
+fix = \f -> let x = f x in x

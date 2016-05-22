@@ -15,8 +15,8 @@ import Language.HM.Error
 import Language.HM.Pretty
 import Text.Parsec.Pos
 
--- import Control.Unification hiding ((=:=), (=~=))
-import Control.Unification.STVar
+import Control.Monad.ST
+import Data.STRef
 import Control.Unification.Types
 
 import Text.PrettyPrint
@@ -41,8 +41,6 @@ import Data.Graph
 import Data.Maybe
 import Data.Function
 
-import Debug.Trace
-
 type Err s loc = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
 type UErr s = UFailure Ty0 (MVar s)
 
@@ -51,11 +49,10 @@ data Ctx s loc = Ctx{ polyVars :: Map Var (MPolyTy s)
                     , loc :: (loc, Doc)
                     }
 
-newtype M s loc a = M{ unM :: ExceptT (Err s loc) (RWST (Ctx s loc) () Int (STBinding s)) a }
+newtype M s loc a = M{ unM :: ExceptT (Err s loc) (RWST (Ctx s loc) () Int (ST s)) a }
                   deriving ( Functor, Applicative, Monad
                            , MonadReader (Ctx s loc)
                            , MonadState Int
-                           -- , MonadError (Err s loc)
                            )
 
 instance MonadError (Err0 Ty0 (MVar s)) (M s loc) where
@@ -64,17 +61,21 @@ instance MonadError (Err0 Ty0 (MVar s)) (M s loc) where
         M . throwError $ Tagged loc err
     catchError act handler = M $ catchError (unM act) (unM . handler . unTag)
 
+instance MonadTC Ty0 (MVar s) (M s loc) where
+    freshVar = do
+        id <- state $ \i -> (i, succ i)
+        ref <- M . lift . lift $ newSTRef Nothing
+        return $ STVar id ref
+    readVar (STVar _ ref) = M . lift . lift $ readSTRef ref
+    writeVar (STVar _ ref) t = M . lift . lift $ writeSTRef ref $ Just t
+
 infix 4 =:=
 (=:=) :: MTy s -> MTy s -> M s loc (MTy s)
 t =:= u = do
-    sub <- t =~= u
-    return $ subst sub t
-
-infix 4 =~=
-(=~=) :: MTy s -> MTy s -> M s loc (Subst Ty0 (MVar s))
-t =~= u = case unify t u of
-    Left uerr -> throwError $ UErr t u uerr
-    Right sub -> return sub
+    res <- runExceptT $ unify t u
+    case res of
+        Left uerr -> throwError $ UErr t u uerr
+        Right () -> return t
 
 withVar :: Var -> MPolyTy s -> M s loc a -> M s loc a
 withVar v ty = local $ \pc -> pc{ polyVars = Map.insert v ty $ polyVars pc }
@@ -85,17 +86,14 @@ withVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
 withLoc :: (Pretty src) => Tagged src loc -> M s loc a -> M s loc a
 withLoc (Tagged loc src) = local $ \pc -> pc{ loc = (loc, pPrint src) }
 
-instance MonadUnify Ty0 (MVar s) (M s loc) where
-    freshVar = M . lift . lift $ freeVar
-
 freshTVar :: M s loc TVar
 freshTVar = get <* modify succ
 
 generalizeHere :: [MTy s] -> M s loc [MPolyTy s]
 generalizeHere tys = do
     tysInScope <- asks $ Map.elems . polyVars
-    let tvsInScope = polyMetaVars tysInScope
-        free = (`Set.notMember` tvsInScope)
+    tvsInScope <- Set.fromList <$> getMetaVarsN tysInScope
+    let free = (`Set.notMember` tvsInScope)
     generalizeN freshTVar free tys
 
 tyCheck :: MTy s -> Term loc -> M s loc (MTy s)
@@ -119,39 +117,30 @@ tyCheck t le@(Tagged _ e) = withLoc le $ case e of
         withVar v (mono t0) $ do
             u <- tyInfer e
             t0 ~> u =:= t
-    -- App f e -> do
-    --     t1 <- tyInfer f
-    --     t2 <- tyInfer e
-    --     runFatal le $ t1 =:= t2 ~> t
-    --     t1 <- runInternal $ applyBindings t1
-    --     t2 <- runInternal $ applyBindings t2
-    --     t <- runInternal $ applyBindings t
-    --     traceShow (t1, t2, t) $ return ()
-    --     -- runInternal $ applyBindings t
-    --     return t
-    -- Case e as -> do
-    --     t0 <- tyInfer e
-    --     ts <- forM as $ \(pat, e) -> do
-    --         tyCheckPat t0 pat $ tyCheck t e
-    --     return $ case ts of
-    --         (t':_) -> t'
-    --         _ -> t
-    -- Let binds e -> tyCheckBinds binds $ tyCheck t e
+    App f e -> do
+        t1 <- tyInfer f
+        t2 <- tyInfer e
+        t1 =:= t2 ~> t
+        return t
+    Case e as -> do
+        t0 <- tyInfer e
+        forM as $ \(pat, e) ->
+          tyCheckPat t0 pat $ tyCheck t e
+        return t
+    Let binds e -> tyCheckBinds binds $ tyCheck t e
 
-{-
 tyCheckBinds :: [(Var, Term loc)] -> M s loc a -> M s loc a
 tyCheckBinds binds body = do
     let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
     go (map flattenSCC $ stronglyConnComp g)
   where
     go (bs:bss) = do
-        tvs <- traverse (const $ UVar <$> freeVar) bs
+        tvs <- traverse (const $ UVar <$> freshVar) bs
         tvs <- withVars (Map.fromList $ zip (map fst bs) (map mono tvs)) $
           zipWithM tyCheck tvs (map snd bs)
         ts <- generalizeHere tvs
         withVars (Map.fromList $ map fst bs `zip` ts) $ go bss
     go [] = body
--}
 
 tyCheckPat :: MTy s -> Pat loc -> M s loc a -> M s loc a
 tyCheckPat t lp@(Tagged tag p) body = case p of
@@ -166,14 +155,13 @@ tyCheckPat t lp@(Tagged tag p) body = case p of
                                  ]
             Just ct -> instantiate $ thaw ct
         let (tArgs, t0) = tFunArgs ct
-        sub <- t =~= t0
+        t =:= t0
         unless (length ps == length tArgs) $
           throwError . Err $
             unwords [ "Bad pattern arity:"
                     , show $ length ps
                     , show $ length tArgs
                     ]
-        tArgs <- return $ fmap (subst sub) tArgs
         go (zip tArgs ps)
       where
         go ((t, p):tps) = tyCheckPat t p $ go tps
@@ -187,7 +175,7 @@ tyInfer e = do
 runM :: (Pretty loc)
      => Map DCon PolyTy
      -> M s loc a
-     -> STBinding s (Either Doc a)
+     -> ST s (Either Doc a)
 runM dataCons act = do
     let polyVars = mempty
         pos = initialPos "foo"

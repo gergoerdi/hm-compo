@@ -1,5 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
 
 module Language.HM.Meta where
 
@@ -7,8 +7,8 @@ import Language.HM.Syntax
 import Language.HM.Remap
 
 import Control.Unification hiding (unify, occursIn, freeVars)
-import Control.Unification.STVar
 import Control.Unification.Types
+import Data.STRef
 
 import Data.Foldable
 import Data.Functor.Fixedpoint
@@ -32,45 +32,104 @@ import Data.Function
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 
+import Debug.Trace
+
+data STVar s t = STVar Int (STRef s (Maybe (UTerm t (STVar s t))))
 type MVar s = STVar s Ty0
 type MTy s = UTerm Ty0 (MVar s)
 type MPolyTy s = UTerm Ty0 (Either TVar (MVar s))
+
+instance Variable (STVar s t) where
+    getVarID (STVar id _) = id
+
+instance Show (STVar s t) where
+    show (STVar id _) = "v" <> show id
+
+instance Eq (STVar s t) where
+    (==) = (==) `on` getVarID
 
 instance Ord (STVar s t) where
     compare = compare `on` getVarID
 
 type Subst t v = IntMap (UTerm t v)
 
-subst :: (Traversable t, Variable v) => Subst t v -> UTerm t v -> UTerm t v
-subst sub = (>>= substV)
-  where
-    substV v = maybe (UVar v) (subst sub) $ IntMap.lookup (getVarID v) sub
-
-unify :: (Unifiable t, Variable v)
-      => UTerm t v -> UTerm t v -> Either (UFailure t v) (Subst t v)
-unify (UVar a)  (UVar b)  | a == b = return mempty
-unify (UVar a)  t         = unifyVar a t
-unify t         (UVar b)  = unifyVar b t
-unify (UTerm t) (UTerm u) = case zipMatch t u of
-    Nothing -> Left $ MismatchFailure t u
-    Just t' -> foldlM (\sub -> either (keep sub) (roll sub)) mempty t'
-  where
-    keep sub = const $ return sub
-    roll sub (t', u') = (sub <>) <$> unify (subst sub t') (subst sub u')
-
-unifyVar :: (Foldable t, Variable v) => v -> UTerm t v -> Either (UFailure t v) (Subst t v)
-unifyVar v t | v `occursIn` t = Left $ OccursFailure v t
-             | otherwise = return $ IntMap.singleton (getVarID v) t
-
-varsOf :: (Foldable t) => UTerm t v -> [v]
-varsOf (UVar v) = [v]
-varsOf (UTerm t) = concatMap varsOf . toList $ t
-
-occursIn :: (Foldable t, Variable v) => v -> UTerm t v -> Bool
-v `occursIn` t = v `elem` varsOf t
-
-class (Unifiable t, Variable v, Monad m) => MonadUnify t v m | m t -> v, v m -> t where
+class (Show (UTerm t v), Show v, Unifiable t, Variable v, Monad m) => MonadTC t v m | m t -> v, v m -> t where
     freshVar :: m v
+    readVar :: v -> m (Maybe (UTerm t v))
+    writeVar :: v -> UTerm t v -> m ()
+
+unify :: (MonadTC t v m) => UTerm t v -> UTerm t v -> ExceptT (UFailure t v) m ()
+unify (UVar a)  (UVar b) | a == b = return ()
+unify (UVar a)  t        = unifyVar a t
+unify t         (UVar b) = unifyVar b t
+unify (UTerm t) (UTerm u) = case zipMatch t u of
+    Nothing -> throwError $ MismatchFailure t u
+    Just t' -> traverse_ (either (const $ pure ()) (uncurry unify)) t'
+
+unifyVar :: (MonadTC t v m) => v -> UTerm t v -> ExceptT (UFailure t v) m ()
+unifyVar v t = do
+    deref <- lift $ readVar v
+    -- traceShow ("unifyVar", v, t, deref) $ return ()
+    case deref of
+        Just u -> unify u t
+        Nothing -> unifyUnbound
+  where
+    unifyUnbound = case t of
+        UVar v' -> do
+            deref' <- lift $ readVar v'
+            case deref' of
+                Just u -> unify (UVar v) u
+                Nothing -> lift $ writeVar v t
+        UTerm u -> do
+            checkOccurs u
+            lift $ writeVar v t
+
+    checkOccurs u = do
+        vs <- lift $ getMetaVars u
+        when (v `elem` vs) $ do
+            t' <- lift $ zonk t
+            throwError $ OccursFailure v t'
+
+class (MonadTC t v m) => HasMetaVars t v m a where
+    getMetaVars :: a -> m [v]
+
+instance (MonadTC t v m) => HasMetaVars t v m (UTerm t v) where
+    getMetaVars = getMetaVarsN
+
+instance (MonadTC t v m) => HasMetaVars t v m (t (UTerm t v)) where
+    getMetaVars = getMetaVarsN
+
+instance (MonadTC t v m) => HasMetaVars t v m (UTerm t (Either TVar v)) where
+    getMetaVars = getMetaVarsN . snd . partitionEithers . toList
+
+instance (MonadTC t v m) => HasMetaVars t v m v where
+    getMetaVars v = do
+        t <- zonkVar v
+        case t of
+            UVar v -> return [v]
+            UTerm t -> getMetaVars t
+
+getMetaVarsN :: (HasMetaVars t v m a, Foldable f) => f a -> m [v]
+getMetaVarsN = fmap concat . traverse getMetaVars . toList
+
+zonk :: (Traversable t, MonadTC t v m) => UTerm t v -> m (UTerm t v)
+zonk (UTerm t) = UTerm <$> traverse zonk t
+zonk (UVar v) = zonkVar v
+
+zonkVar :: (Traversable t, MonadTC t v m) => v -> m (UTerm t v)
+zonkVar v = do
+    deref <- readVar v
+    case deref of
+        Nothing -> return $ UVar v
+        Just t -> do
+            t' <- zonk t
+            writeVar v t'
+            return t'
+
+zonkPoly :: (Traversable t, MonadTC t v m) => UTerm t (Either TVar v) -> m (UTerm t (Either TVar v))
+zonkPoly (UVar (Left a)) = return $ UVar (Left a)
+zonkPoly (UVar (Right v)) = fmap Right <$> zonkVar v
+zonkPoly (UTerm t) = UTerm <$> traverse zonkPoly t
 
 mono :: MTy s -> MPolyTy s
 mono = fmap Right
@@ -78,17 +137,17 @@ mono = fmap Right
 thaw :: PolyTy -> MPolyTy s
 thaw = fmap Left
 
-generalizeN :: (Applicative m, Traversable t)
-            => m TVar -> (MVar s -> Bool) -> t (MTy s) -> m (t (MPolyTy s))
+generalizeN :: (MonadTC t v m, Traversable f)
+            => m tv -> (v -> Bool) -> f (UTerm t v) -> m (f (UTerm t (Either tv v)))
 generalizeN freshTVar free tys = do
-    let Pair (Constant mvars) fill = traverse walk tys
+    tys <- traverse zonk tys
+    let Pair (Constant mvars) fill = traverse (traverse walk) tys
     runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
   where
-    walk (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse walk ts)
-    walk (UVar v) | free v = UVar <$> (Left <$> remap v)
-                  | otherwise = UVar <$> pure (Right v)
+    walk v | free v = Left <$> remap (getVarID v)
+           | otherwise = pure (Right v)
 
-generalize :: (Applicative m) => m TVar -> (MVar s -> Bool) -> MTy s -> m (MPolyTy s)
+generalize :: (MonadTC t v m) => m tv -> (v -> Bool) -> UTerm t v -> m (UTerm t (Either tv v))
 generalize freshTVar free = fmap runIdentity . generalizeN freshTVar free . Identity
 
 freezePoly :: MPolyTy s -> Maybe PolyTy
@@ -98,10 +157,7 @@ freezePoly = walk
     walk (UVar (Left a)) = UVar <$> pure a
     walk (UVar (Right v)) = mzero
 
-polyMetaVars :: [MPolyTy s] -> Set (MVar s)
-polyMetaVars = Set.fromList . snd . partitionEithers . concatMap varsOf
-
-instantiateN :: (MonadUnify Ty0 (MVar s) m, Traversable t)
+instantiateN :: (MonadTC Ty0 (MVar s) m, Traversable t)
              => t (MPolyTy s) -> m (t (MTy s))
 instantiateN ty = do
     let Pair (Constant tvars) fill = traverse walk ty
@@ -113,6 +169,6 @@ instantiateN ty = do
     walk (UVar (Left a)) = UVar <$> remap a
     walk (UVar (Right v)) = UVar <$> pure v
 
-instantiate :: (MonadUnify Ty0 (MVar s) m)
+instantiate :: (MonadTC Ty0 (MVar s) m)
              => MPolyTy s -> m (MTy s)
 instantiate = fmap runIdentity . instantiateN . Identity

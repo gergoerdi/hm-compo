@@ -3,11 +3,11 @@ import Language.HM.Pretty
 import qualified Language.HM.Linear as Linear
 -- import Language.HM.Compositional (Typing0((:-)))
 -- import qualified Language.HM.Compositional as Compo
-import Language.HM.Meta (freezePoly, generalize)
+import Language.HM.Meta (freezePoly, generalize, zonk, zonkPoly)
 import Language.HM.Parser
 
 import Control.Unification
-import Control.Unification.STVar (runSTBinding)
+import Control.Monad.ST
 
 import Control.Monad.Trans.Identity
 import Control.Monad.State
@@ -21,23 +21,25 @@ import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Either (partitionEithers)
 
+{-
 main :: IO ()
 main = do
     s <- readFile "demo5.hm"
     es <- case runP "demo5.hm" (vlist term) s of
         Left err -> error $ show err
         Right terms -> return terms
-    let result = runSTBinding $ Linear.runM mempty $ do
+    let result = runST $ Linear.runM mempty $ do
             ts <- mapM Linear.tyInfer es
+            ts <- mapM zonk ts
             return $ map pPrint ts
 
     print result
+-}
 
-{-
 main :: IO ()
 main = do
-    s <- readFile "demo4.hm"
-    decls <- case runP "demo4.hm" decl s of
+    s <- readFile "demo2.hm"
+    decls <- case runP "demo2.hm" decl s of
         Left err -> error $ show err
         Right decls -> return $ decls
     let (dataDefs, varDefs) = partitionEithers $ map toEither decls
@@ -61,8 +63,9 @@ runLinear :: (Pretty tag)
           => Map DCon PolyTy
           -> [(Var, Term tag)]
           -> Either Doc [(Var, PolyTy)]
-runLinear dataCons bindings = runSTBinding $ Linear.runM dataCons $ do
+runLinear dataCons bindings = runST $ Linear.runM dataCons $ do
     polyVars <- Linear.tyCheckBinds bindings $ asks Linear.polyVars
+    polyVars <- traverse zonkPoly polyVars
     -- runIdentityT $ forM (Map.toList polyVars) $ \(name, mty) -> do
     --     mty <- applyBindings mty
     --     return $ freeze (name, mty)
@@ -73,7 +76,6 @@ runLinear dataCons bindings = runSTBinding $ Linear.runM dataCons $ do
         err = unwords [ "Ugh! Type variables escaped in type of"
                       , show name, "as", show mty
                       ]
--}
 {-
 runCompo :: Map DCon PolyTy -> [(Var, Term tag)] -> Either Doc [(Var, PolyTy)]
 runCompo dataCons bindings = runSTBinding $ Compo.runM dataCons $ do

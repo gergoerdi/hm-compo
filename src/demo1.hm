@@ -7,3 +7,7 @@ map = \f -> \xs -> case xs of
 foldr = \f -> \y -> \xs -> case xs of
   Nil -> y
   Cons x xs -> f x (foldr f y xs)
+
+id = \x -> x
+const = \x -> \y -> x
+flip = \f -> \y -> \x -> f x y
