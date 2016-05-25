@@ -4,6 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module Language.HM.Linear where
 
+import Language.HM.Monad
 import Language.HM.Syntax
 import Language.HM.Remap
 import Language.HM.Meta
@@ -38,55 +39,19 @@ import Data.Maybe
 import Data.Function
 
 type Err s loc = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
-type UErr s = UFailure Ty0 (MVar s)
 
-data Ctx s loc = Ctx{ polyVars :: Map Var (MPolyTy s)
-                    , dataCons :: Map DCon PolyTy
-                    , loc :: (loc, Doc)
-                    }
+instance UErr (Err0 t v) t v where
+    uerr = UErr
 
-newtype M s loc a = M{ unM :: ExceptT (Err s loc) (RWST (Ctx s loc) () Int (ST s)) a }
-                  deriving ( Functor, Applicative, Monad
-                           , MonadReader (Ctx s loc)
-                           , MonadState Int
-                           )
+data Ctx s loc = Ctx{ polyVars :: Map Var (MPolyTy s) }
 
-instance MonadError (Err0 Ty0 (MVar s)) (M s loc) where
-    throwError err = do
-        loc <- asks loc
-        M . throwError $ Tagged loc err
-    catchError act handler = M $ catchError (unM act) (unM . handler . unTag)
-
-instance MonadTC Ty0 (MVar s) (M s loc) where
-    freshVar = do
-        id <- state $ \i -> (i, succ i)
-        ref <- M . lift . lift $ newSTRef Nothing
-        return $ STVar id ref
-    readVar (STVar _ ref) = M . lift . lift $ readSTRef ref
-    writeVar (STVar _ ref) t = M . lift . lift $ writeSTRef ref $ Just t
-
-infix 4 =:=
-(=:=) :: MTy s -> MTy s -> M s loc (MTy s)
-t =:= u = do
-    res <- runExceptT $ unify t u
-    case res of
-        Left uerr -> do
-            t <- zonk t
-            u <- zonk u
-            throwError $ UErr t u uerr
-        Right () -> return t
+type M s loc = TC (Ctx s loc) (Err0 Ty0 (MVar s)) s loc
 
 withVar :: Var -> MPolyTy s -> M s loc a -> M s loc a
 withVar v ty = local $ \pc -> pc{ polyVars = Map.insert v ty $ polyVars pc }
 
 withVars :: Map Var (MPolyTy s) -> M s loc a -> M s loc a
 withVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
-
-withLoc :: (Pretty src) => Tagged src loc -> M s loc a -> M s loc a
-withLoc (Tagged loc src) = local $ \pc -> pc{ loc = (loc, pPrint src) }
-
-freshTVar :: M s loc TVar
-freshTVar = get <* modify succ
 
 generalizeHere :: [MTy s] -> M s loc [MPolyTy s]
 generalizeHere tys = do
@@ -105,7 +70,7 @@ tyCheck t le@(Tagged _ e) = withLoc le $ case e of
             Just t -> instantiate t
         vt =:= t
     Con dcon -> do
-        ct <- asks $ Map.lookup dcon . dataCons
+        ct <- askDataCon dcon
         ct <- case ct of
             Nothing -> throwError . Err $
                          unwords ["Unknown data constructor:", show dcon]
@@ -146,7 +111,7 @@ tyCheckPat t lp@(Tagged tag p) body = case p of
     PWild -> body
     PVar v -> withVar v (mono t) body
     PCon dcon ps -> do
-        ct <- asks $ Map.lookup dcon . dataCons
+        ct <- askDataCon dcon
         ct <- case ct of
             Nothing -> throwError . Err $
                          unwords [ "Unknown data constructor:"
@@ -172,16 +137,6 @@ tyInfer e = do
     tyCheck ty e
 
 runM :: (Pretty loc) => SourceName -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
-runM sourceName dataCons act = do
-    let polyVars = mempty
-        pos = initialPos sourceName
-        -- loc = (pos, empty)
-    (x, _, _) <- runRWST (runExceptT $ unM act) Ctx{..} 0
-    return $ either (Left . pPrintErr) Right $ x
+runM sourceName dataCons = runTC sourceName dataCons Ctx{..}
   where
-    pPrintErr (Tagged (loc, src) err) =
-        vcat [ pPrint loc
-             , nest 4 src
-             , text ""
-             , pPrint err
-             ]
+    polyVars = mempty
