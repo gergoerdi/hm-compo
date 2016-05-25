@@ -121,9 +121,9 @@ tyCheck t le@(Tagged _ e) = withLoc le $ case e of
             u <- tyInfer e
             t0 ~> u =:= t
     App f e -> do
-        t1 <- tyInfer f
-        t2 <- tyInfer e
-        t1 =:= t2 ~> t
+        t' <- UVar <$> freshVar
+        tyCheck (t' ~> t) f
+        tyCheck t' e
         return t
     Case e as -> do
         t0 <- tyInfer e
