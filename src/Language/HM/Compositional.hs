@@ -104,7 +104,10 @@ infix 4 =:=
 t =:= u = do
     res <- runExceptT $ unify t u
     case res of
-        Left uerr -> throwError $ UErr t u uerr
+        Left uerr -> do
+            t <- zonk t
+            u <- zonk u
+            throwError $ UErr t u uerr
         Right () -> return t
 
 unzipTypings :: [Typing0 var t v] -> ([Map var (UTerm t v)], [UTerm t v])
