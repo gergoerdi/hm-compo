@@ -1,9 +1,9 @@
 import Language.HM.Syntax
 import Language.HM.Pretty
 import qualified Language.HM.Linear as Linear
--- import Language.HM.Compositional (Typing0((:-)))
--- import qualified Language.HM.Compositional as Compo
-import Language.HM.Meta (freezePoly, generalize, zonk, zonkPoly)
+import Language.HM.Compositional (Typing0((:-)))
+import qualified Language.HM.Compositional as Compo
+import Language.HM.Meta (freezePoly, generalize, zonk, zonkPoly, MTy)
 import Language.HM.Parser
 
 import Control.Unification
@@ -21,25 +21,10 @@ import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Either (partitionEithers)
 
-{-
 main :: IO ()
 main = do
-    s <- readFile "demo5.hm"
-    es <- case runP "demo5.hm" (vlist term) s of
-        Left err -> error $ show err
-        Right terms -> return terms
-    let result = runST $ Linear.runM mempty $ do
-            ts <- mapM Linear.tyInfer es
-            ts <- mapM zonk ts
-            return $ map pPrint ts
-
-    print result
--}
-
-main :: IO ()
-main = do
-    s <- readFile "demo2.hm"
-    decls <- case runP "demo2.hm" decl s of
+    s <- readFile sourceName
+    decls <- case runP sourceName decl s of
         Left err -> error $ show err
         Right decls -> return $ decls
     let (dataDefs, varDefs) = partitionEithers $ map toEither decls
@@ -47,11 +32,13 @@ main = do
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    -- let result = prettyTops $ runCompo dataDefs' varDefs
+    -- let result = prettyTops $ runCompo sourceName dataDefs' varDefs
     -- print result
 
-    let result = prettyTops $ runLinear dataDefs' varDefs
+    let result = prettyTops $ runLinear sourceName dataDefs' varDefs
     print result
+  where
+    sourceName = "demo2.hm"
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
@@ -59,16 +46,14 @@ prettyTops (Right vars) = vcat [ text name <+> dcolon <+> pPrint t
                                | (name, t) <- vars
                                ]
 
-runLinear :: (Pretty tag)
-          => Map DCon PolyTy
-          -> [(Var, Term tag)]
+runLinear :: (Pretty loc)
+          => SourceName
+          -> Map DCon PolyTy
+          -> [(Var, Term loc)]
           -> Either Doc [(Var, PolyTy)]
-runLinear dataCons bindings = runST $ Linear.runM dataCons $ do
+runLinear sourceName dataCons bindings = runST $ Linear.runM sourceName dataCons $ do
     polyVars <- Linear.tyCheckBinds bindings $ asks Linear.polyVars
-    polyVars <- traverse zonkPoly polyVars
-    -- runIdentityT $ forM (Map.toList polyVars) $ \(name, mty) -> do
-    --     mty <- applyBindings mty
-    --     return $ freeze (name, mty)
+    -- polyVars <- traverse zonkPoly polyVars
     return $ map freeze . Map.toList $ polyVars
   where
     freeze (name, mty) = (name, fromMaybe (error err) $ freezePoly mty)
@@ -76,15 +61,21 @@ runLinear dataCons bindings = runST $ Linear.runM dataCons $ do
         err = unwords [ "Ugh! Type variables escaped in type of"
                       , show name, "as", show mty
                       ]
-{-
-runCompo :: Map DCon PolyTy -> [(Var, Term tag)] -> Either Doc [(Var, PolyTy)]
-runCompo dataCons bindings = runSTBinding $ Compo.runM dataCons $ do
+
+runCompo :: (Pretty loc)
+         => SourceName
+         -> Map DCon PolyTy
+         -> [(Var, Term loc)]
+         -> Either Doc [(Var, PolyTy)]
+runCompo sourceName dataCons bindings = runST $ Compo.runM sourceName dataCons $ do
     Compo.tyCheckBinds bindings $ \mc -> do
         pvars <- asks Compo.polyVars
         let monos = [ (name, t) | (name, Just (mc :- t)) <- Map.toList pvars ]
-        tys <- runIdentityT $ zip (map fst monos) <$> (applyBindingsAll . map snd $ monos)
+        -- tys <- runIdentityT $ zip (map fst monos) <$> (applyBindingsAll . map snd $ monos)
+        tys <- traverse (traverse zonk) monos
         return $ map freeze tys
   where
+    freeze :: (Var, MTy s) -> (Var, PolyTy)
     freeze (name, mty) = (name, fromMaybe (error err) $ freezePoly mty')
       where
         mty' = evalState (generalize fresh (const True) mty) 0
@@ -94,7 +85,6 @@ runCompo dataCons bindings = runSTBinding $ Compo.runM dataCons $ do
         err = unwords [ "Ugh! Type variables escaped in type of"
                       , show name, "as", show mty
                       ]
--}
 
 dcolon :: Doc
 dcolon = text "::"

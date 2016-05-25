@@ -99,7 +99,7 @@ instance (MonadTC t v m) => HasMetaVars t v m (UTerm t v) where
 instance (MonadTC t v m) => HasMetaVars t v m (t (UTerm t v)) where
     getMetaVars = getMetaVarsN
 
-instance (MonadTC t v m) => HasMetaVars t v m (UTerm t (Either TVar v)) where
+instance (MonadTC t v m) => HasMetaVars t v m (UTerm t (Either tv v)) where
     getMetaVars = getMetaVarsN . snd . partitionEithers . toList
 
 instance (MonadTC t v m) => HasMetaVars t v m v where
@@ -126,49 +126,34 @@ zonkVar v = do
             writeVar v t'
             return t'
 
-zonkPoly :: (Traversable t, MonadTC t v m) => UTerm t (Either TVar v) -> m (UTerm t (Either TVar v))
+zonkPoly :: (Traversable t, MonadTC t v m) => UTerm t (Either tv v) -> m (UTerm t (Either tv v))
 zonkPoly (UVar (Left a)) = return $ UVar (Left a)
 zonkPoly (UVar (Right v)) = fmap Right <$> zonkVar v
 zonkPoly (UTerm t) = UTerm <$> traverse zonkPoly t
 
-mono :: MTy s -> MPolyTy s
+mono :: (Functor f) => f v -> f (Either tv v)
 mono = fmap Right
 
 thaw :: PolyTy -> MPolyTy s
 thaw = fmap Left
 
-generalizeN :: (MonadTC t v m, Traversable f)
+generalizeN :: (Monad m, Variable v, Traversable t, Traversable f)
             => m tv -> (v -> Bool) -> f (UTerm t v) -> m (f (UTerm t (Either tv v)))
 generalizeN freshTVar free tys = do
-    tys <- traverse zonk tys
     let Pair (Constant mvars) fill = traverse (traverse walk) tys
     runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
   where
     walk v | free v = Left <$> remap (getVarID v)
            | otherwise = pure (Right v)
 
-generalize :: (MonadTC t v m) => m tv -> (v -> Bool) -> UTerm t v -> m (UTerm t (Either tv v))
+generalize :: (Variable v, Traversable t, Monad m) => m tv -> (v -> Bool) -> UTerm t v -> m (UTerm t (Either tv v))
 generalize freshTVar free = fmap runIdentity . generalizeN freshTVar free . Identity
 
 freezePoly :: MPolyTy s -> Maybe PolyTy
-freezePoly = walk
-  where
-    walk (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse walk ts)
-    walk (UVar (Left a)) = UVar <$> pure a
-    walk (UVar (Right v)) = mzero
+freezePoly = traverse (either pure (const mzero))
 
-instantiateN :: (MonadTC Ty0 (MVar s) m, Traversable t)
-             => t (MPolyTy s) -> m (t (MTy s))
-instantiateN ty = do
-    let Pair (Constant tvars) fill = traverse walk ty
+instantiate :: (Ord tv, MonadTC t v m, Traversable f) => f (Either tv v) -> m (f v)
+instantiate ptys = do
+    let Pair (Constant tvars) fill = traverse (either remap pure) ptys
     tvars <- traverse (const freshVar) $ Map.fromSet (const ()) tvars
     return $ runReader fill tvars
-  where
-    walk :: MPolyTy s -> Remap TVar (MVar s) (MTy s)
-    walk (UTerm (TApp tcon ts)) = UTerm <$> (TApp tcon <$> traverse walk ts)
-    walk (UVar (Left a)) = UVar <$> remap a
-    walk (UVar (Right v)) = UVar <$> pure v
-
-instantiate :: (MonadTC Ty0 (MVar s) m)
-             => MPolyTy s -> m (MTy s)
-instantiate = fmap runIdentity . instantiateN . Identity

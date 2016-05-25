@@ -175,13 +175,10 @@ tyInfer e = do
     ty <- UVar <$> freshVar
     tyCheck ty e
 
-runM :: (Pretty loc)
-     => Map DCon PolyTy
-     -> M s loc a
-     -> ST s (Either Doc a)
-runM dataCons act = do
+runM :: (Pretty loc) => SourceName -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
+runM sourceName dataCons act = do
     let polyVars = mempty
-        pos = initialPos "foo"
+        pos = initialPos sourceName
         -- loc = (pos, empty)
     (x, _, _) <- runRWST (runExceptT $ unM act) Ctx{..} 0
     return $ either (Left . pPrintErr) Right $ x

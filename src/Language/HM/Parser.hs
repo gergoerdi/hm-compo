@@ -1,5 +1,8 @@
 {-# LANGUAGE RecordWildCards #-}
-module Language.HM.Parser where
+module Language.HM.Parser
+       ( runP, vlist, SourceName
+       , decl, term, Decl(..)
+       ) where
 
 import Language.HM.Lexer
 import Language.HM.Syntax
