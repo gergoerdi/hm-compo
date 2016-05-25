@@ -1,11 +1,7 @@
-{-# LANGUAGE Rank2Types, ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards #-}
-
 module Language.HM.Linear where
 
 import Language.HM.Syntax
