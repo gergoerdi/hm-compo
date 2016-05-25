@@ -74,7 +74,10 @@ infix 4 =:=
 t =:= u = do
     res <- runExceptT $ unify t u
     case res of
-        Left uerr -> throwError $ UErr t u uerr
+        Left uerr -> do
+            t <- zonk t
+            u <- zonk u
+            throwError $ UErr t u uerr
         Right () -> return t
 
 withVar :: Var -> MPolyTy s -> M s loc a -> M s loc a
@@ -94,7 +97,7 @@ generalizeHere tys = do
     tysInScope <- asks $ Map.elems . polyVars
     tvsInScope <- Set.fromList <$> getMetaVarsN tysInScope
     let free = (`Set.notMember` tvsInScope)
-    generalizeN freshTVar free tys
+    generalizeN freshTVar free =<< traverse zonk tys
 
 tyCheck :: MTy s -> Term loc -> M s loc (MTy s)
 tyCheck t le@(Tagged _ e) = withLoc le $ case e of

@@ -29,12 +29,24 @@ instance Fallible t v (Err0 t v) where
 pprErr :: Err0 Ty0 v -> Ppr v Doc
 pprErr (UErr t0 u0 uerr) = case uerr of
     OccursFailure v t ->
-        header "Infinite type" <$> sequenceA [pprVar v, pprType 0 t]
+        header "Infinite type" $ hsep <$> sequenceA
+          [ pure $ text "Infinite type in"
+          , pprVar v
+          , pure $ text "~"
+          , pprType 0 t
+          ]
     MismatchFailure t u ->
-        header "Type mismatch" <$> sequenceA [ (text "Expected:" <+>) <$> pprType0 0 t
-                                             , (text "Got:" <+>) <$> pprType0 0 u]
+        header "Type mismatch" $ vcat <$> sequenceA
+          [ (text "Cannot unify" <+>) <$> pprType0 0 t
+          , (text "with" <+>) <$> pprType0 0 u]
   where
-    header s = hang (text s <> colon) 4 . vcat
+    header' s t0' u0' d = hang (text s <> colon) 4 $
+                          vcat $ [ text "Expected:" <+> t0'
+                                 , text "Got:" <+> u0'
+                                 , text ""
+                                 , d
+                                 ]
+    header s d = header' s <$> pprType 0 t0 <*> pprType 0 u0 <*> d
 pprErr (Err s) = pure $ text s
 
 instance (Ord v) => Pretty (Err0 Ty0 v) where
