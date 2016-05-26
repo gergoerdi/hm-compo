@@ -9,10 +9,8 @@ module Language.HM.Compositional where
 
 import Language.HM.Monad
 import Language.HM.Syntax
-import Language.HM.Remap
 import Language.HM.Meta
 import Language.HM.Error
-import Language.HM.Pretty
 import Text.Parsec.Pos
 
 import Control.Monad.ST
@@ -21,24 +19,14 @@ import Control.Unification.Types
 
 import Text.PrettyPrint.HughesPJClass (Doc, Pretty, pPrint)
 
-import Data.Foldable
-import Data.Functor.Fixedpoint
 import Control.Monad
 import Control.Monad.Except
-import Control.Monad.RWS hiding (Product)
-import Control.Monad.Reader
-import Control.Monad.Writer hiding (Product)
-import Control.Monad.Identity
-import Control.Monad.Trans.Identity
-import Data.Functor.Product
-import Data.Functor.Constant
+import Control.Monad.RWS
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Graph
-import Data.Maybe
-import Data.Function
 
 type Err s loc = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
 
