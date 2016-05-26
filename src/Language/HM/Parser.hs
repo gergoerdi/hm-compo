@@ -88,9 +88,7 @@ decl = fmap concat . vlist $
         let tvids = Map.fromList $ tvs `zip` [0..]
             tv a = maybe (fail "Unsupported: existential type variables") return $
                    Map.lookup a tvids
-            walk (UTerm (TApp tcon ts)) = UTerm <$> TApp tcon <$> traverse walk ts
-            walk (UVar a) = UVar <$> tv a
-        ty' <- walk ty
+        ty' <- traverse tv ty
         return $ DataDef dcon ty'
 
 tyPart :: Parser (UTerm Ty0 String)
@@ -99,11 +97,8 @@ tyPart = choice [ parens ty
                 , UTerm <$> (TApp <$> conName <*> pure [])
                 ]
 
-tyFun :: UTerm Ty0 a -> UTerm Ty0 a -> UTerm Ty0 a
-tyFun t u = UTerm $ TApp "Fun" [t, u]
-
 ty :: Parser (UTerm Ty0 String)
-ty = foldr1 tyFun <$> tyPart' `sepBy1` symbol "->"
+ty = foldr1 (\t u -> UTerm $ TFun t u) <$> tyPart' `sepBy1` symbol "->"
   where
     tyPart' = choice [ parens ty
                      , UVar <$> varName
@@ -114,7 +109,7 @@ dataDef :: Parser [(DCon, [String], UTerm Ty0 String)]
 dataDef = do
     ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` symbol "|"
     let t = UTerm $ TApp tname $ map UVar params
-        toDConTy = foldr tyFun t
+        toDConTy = foldr (\t u -> UTerm $ TFun t u) t
     return [(dcon, params, dconTy) | (dcon, ts) <- dconSpecs, let dconTy = toDConTy ts]
   where
     header = reserved "data" *> ((,) <$> conName <*> many varName) <* symbol "="
