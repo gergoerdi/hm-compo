@@ -65,7 +65,7 @@ withPolyVars :: Map Var (MTyping s) -> M s loc a -> M s loc a
 withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union (Just <$> vtys) $ polyVars pc }
 
 unzipTypings :: [Typing0 var t v] -> ([Map var (UTerm t v)], [UTerm t v])
-unzipTypings tps = unzip [(mc, t) | mc :- t <- tps]
+unzipTypings typs = unzip [(mc, t) | mc :- t <- typs]
 
 unifyTypings :: [Map Var (MTy s)] -> M s loc (Map Var (MTy s))
 unifyTypings mcs = traverse unifyMany $ zipMaps mcs
@@ -97,7 +97,7 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         case vt of
-            Just (Just tp) -> instantiateTyping tp
+            Just (Just typ) -> instantiateTyping typ
             Just Nothing -> do
                 tv <- UVar <$> freshVar
                 return $ Map.singleton v tv :- tv
@@ -121,14 +121,14 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
         return $ mc :- a
     Case e as -> do
         mc0 :- t0 <- tyInfer e
-        tps <- forM as $ \(pat, e) -> do
+        typs <- forM as $ \(pat, e) -> do
             mcPat :- tPat <- tyInferPat pat
-            tPat <- t0 =:= tPat
+            t0 =:= tPat
             mc :- t <- withMonoVars (Map.keys mcPat) $ tyInfer e
             unifyTypings [mc, mcPat]
             let mc' = mc `Map.difference` mcPat
             return $ mc' :- t
-        let (mcs, ts) = unzipTypings tps
+        let (mcs, ts) = unzipTypings typs
         mc <- unifyTypings (mc0:mcs)
         t <- unifyMany ts
         return $ mc :- t
@@ -152,8 +152,8 @@ tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of
         let (tArgs, t) = tFunArgs ct
         unless (length ps == length tArgs) $
           throwError $ Err $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs]
-        tps <- traverse tyInferPat ps
-        let (mcs, ts) = unzipTypings tps
+        typs <- traverse tyInferPat ps
+        let (mcs, ts) = unzipTypings typs
         mc <- unifyTypings mcs
         zipWithM_ (=:=) tArgs ts
         return $ mc :- t
@@ -164,13 +164,15 @@ tyCheckBinds binds body = do
     go mempty (map flattenSCC $ stronglyConnComp g)
   where
     go mc0 (bs:bss) = do
-        pc <- withMonoVars (map fst bs) $ do
-            tps <- zip (map fst bs) <$> traverse (tyInfer . snd) bs
-            let (mcs, ts) = unzipTypings $ map snd tps
-            mc <- unifyTypings mcs
-            let mcRecs = [Map.singleton v t | (v, mc :- t) <- tps]
-            unifyTypings (mc:mcRecs)
-            return $ Map.fromList tps
+        let newVars = map fst bs
+        pc <- withMonoVars newVars $ do
+            typings <- zip newVars <$> traverse (tyInfer . snd) bs
+            let (mcs, ts) = unzipTypings $ map snd typings
+                mcRecs = [Map.singleton v t | (v, _ :- t) <- typings]
+            unifyTypings (mcs ++ mcRecs)
+            let newVarSet = Map.fromList [(v, ()) | v <- newVars]
+            let unshadow (mc :- t) = (mc `Map.difference` newVarSet) :- t
+            return $ fmap unshadow $ Map.fromList typings
         let (mcs, _) = unzipTypings $ Map.elems pc
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
