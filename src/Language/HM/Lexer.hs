@@ -24,7 +24,7 @@ rawToken = asum [ RawWord <$> word
                 ]
   where
     word :: RE Char String
-    word = (:) <$> psym isAlpha <*> many (psym isAlphaNum <|> psym isSymbol)
+    word = (:) <$> psym isAlpha <*> many (psym isAlphaNum <|> psym isSymbol <|> psym (`elem` "'?"))
 
     symbol :: RE Char String
     symbol = some $ psym isSymbol <|> psym isPunctuation
