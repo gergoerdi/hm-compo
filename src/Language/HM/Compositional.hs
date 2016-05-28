@@ -77,14 +77,20 @@ unifyMany (t:ts) = do
     foldM (=:=) t ts
     return t
 
+zonkTyping :: MTyping s -> M s loc (MTyping s)
+zonkTyping (mc :- t) = do
+    mc <- traverse zonk mc
+    t <- zonk t
+    return $ mc :- t
+
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
 
 instantiateTyping :: MTyping s -> M s loc (MTyping s)
-instantiateTyping = instantiate . mono'
+instantiateTyping = instantiate <=< gen <=< zonkTyping
   where
-    mono' :: MTyping s -> Typing (Either TVar (MVar s))
-    mono' = mono
+    gen :: MTyping s -> M s loc (Typing (Either TVar (MVar s)))
+    gen = generalize freshTVar (const True)
 
 tyInfer :: Term loc -> M s loc (MTyping s)
 tyInfer le@(Tagged _ e) = withLoc le $ case e of

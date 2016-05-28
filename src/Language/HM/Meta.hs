@@ -137,8 +137,8 @@ mono = fmap Right
 thaw :: PolyTy -> MPolyTy s
 thaw = fmap Left
 
-generalizeN :: (Monad m, Variable v, Traversable t, Traversable f)
-            => m tv -> (v -> Bool) -> f (UTerm t v) -> m (f (UTerm t (Either tv v)))
+generalizeN :: (Applicative m, Variable v, Traversable t, Traversable f)
+            => m tv -> (v -> Bool) -> f (t v) -> m (f (t (Either tv v)))
 generalizeN freshTVar free tys = do
     let Pair (Constant mvars) fill = traverse (traverse walk) tys
     runReader fill <$> traverse (const freshTVar) (Map.fromSet (const ()) mvars)
@@ -146,7 +146,8 @@ generalizeN freshTVar free tys = do
     walk v | free v = Left <$> remap (getVarID v)
            | otherwise = pure (Right v)
 
-generalize :: (Variable v, Traversable t, Monad m) => m tv -> (v -> Bool) -> UTerm t v -> m (UTerm t (Either tv v))
+generalize :: (Applicative m, Variable v, Traversable t)
+            => m tv -> (v -> Bool) -> t v -> m (t (Either tv v))
 generalize freshTVar free = fmap runIdentity . generalizeN freshTVar free . Identity
 
 freezePoly :: MPolyTy s -> Maybe PolyTy
