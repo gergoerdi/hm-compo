@@ -11,3 +11,9 @@ foldr = \f -> \y -> \xs -> case xs of
 id = \x -> x
 const = \x -> \y -> x
 flip = \f -> \y -> \x -> f x y
+
+fix = \f -> let x = f x in x
+
+undefined = let x = x in x
+undefined1 = fix id
+undefined2 = undefined2
