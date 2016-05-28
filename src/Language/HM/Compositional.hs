@@ -49,7 +49,7 @@ instance (Traversable t) => Traversable (Typing0 var t) where
 type Typing = Typing0 Var Ty0
 type MTyping s = Typing (MVar s)
 
-data Ctx s loc = Ctx{ polyVars :: Map Var (Maybe (MTyping s)) }
+data Ctx s loc = Ctx{ polyVars :: Map Var (MTyping s) }
 
 type M s loc = TC (Ctx s loc) (Err0 Ty0 (MVar s)) s loc
 
@@ -57,12 +57,16 @@ withMonoVar :: Var -> M s loc a -> M s loc a
 withMonoVar v = withMonoVars [v]
 
 withMonoVars :: [Var] -> M s loc a -> M s loc a
-withMonoVars vs = local $ \pc -> pc{ polyVars = Map.union newVars $ polyVars pc }
+withMonoVars vs body = do
+    vtys <- traverse monoVar vs
+    withPolyVars (Map.fromList vtys) body
   where
-    newVars = Map.fromList [(v, Nothing) | v <- vs]
+    monoVar v = do
+        t <- UVar <$> freshVar
+        return (v, Map.singleton v t :- t)
 
 withPolyVars :: Map Var (MTyping s) -> M s loc a -> M s loc a
-withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union (Just <$> vtys) $ polyVars pc }
+withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
 
 unzipTypings :: [Typing0 var t v] -> ([Map var (UTerm t v)], [UTerm t v])
 unzipTypings typs = unzip [(mc, t) | mc :- t <- typs]
@@ -97,10 +101,7 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         case vt of
-            Just (Just typ) -> instantiateTyping typ
-            Just Nothing -> do
-                tv <- UVar <$> freshVar
-                return $ Map.singleton v tv :- tv
+            Just typ -> instantiateTyping typ
             Nothing -> throwError $ Err $ unwords ["Not in scope:", show v]
     Con dcon -> do
         ct <- askDataCon dcon
@@ -134,7 +135,8 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
         return $ mc :- t
     Let binds e -> tyCheckBinds binds $ \mc0 -> do
         mc :- t <- tyInfer e
-        return $ Map.union mc mc0 :- t
+        mc <- unifyTypings [mc, mc0]
+        return $ mc :- t
 
 tyInferPat :: Pat loc -> M s loc (MTyping s)
 tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of
@@ -171,7 +173,7 @@ tyCheckBinds binds body = do
                 mcRecs = [Map.singleton v t | (v, _ :- t) <- typings]
             unifyTypings (mcs ++ mcRecs)
             let newVarSet = Map.fromList [(v, ()) | v <- newVars]
-            let unshadow (mc :- t) = (mc `Map.difference` newVarSet) :- t
+                unshadow (mc :- t) = (mc `Map.difference` newVarSet) :- t
             return $ fmap unshadow $ Map.fromList typings
         let (mcs, _) = unzipTypings $ Map.elems pc
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss

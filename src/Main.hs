@@ -70,7 +70,7 @@ runCompo :: (Pretty loc)
 runCompo sourceName dataCons bindings = runST $ Compo.runM sourceName dataCons $ do
     Compo.tyCheckBinds bindings $ \mc -> do
         pvars <- asks Compo.polyVars
-        let monos = [ (name, t) | (name, Just (mc :- t)) <- Map.toList pvars ]
+        let monos = [ (name, t) | (name, mc :- t) <- Map.toList pvars ]
         -- tys <- runIdentityT $ zip (map fst monos) <$> (applyBindingsAll . map snd $ monos)
         tys <- traverse (traverse zonk) monos
         return $ map freeze tys
