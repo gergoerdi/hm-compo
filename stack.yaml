@@ -1,0 +1,11 @@
+resolver: lts-5.16
+packages:
+- '.'
+
+extra-deps:
+- Stream-0.4.7.2
+- lazysmallcheck-0.6
+- monadplus-1.4.2
+
+flags: {}
+extra-package-dbs: []

@@ -1,0 +1,7 @@
+data List a = Nil | Cons a (List a)
+data Pair a b = Pair a b
+data Bool = True | False
+
+mmap = let map = \f -> \xs -> case xs of
+             Nil -> Nil
+             Cons x xs -> Cons (f x) (map f xs) in Pair map map

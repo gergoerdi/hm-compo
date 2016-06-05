@@ -1,0 +1,5 @@
+data Maybe a = Nothing | Just a
+data List a = Nil | Cons a (List a)
+data Pair a b = Pair a b 
+
+foo = \x -> Pair (Just x) (Just x)
