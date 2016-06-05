@@ -4,4 +4,5 @@ data Bool = True | False
 
 mmap = let map = \f -> \xs -> case xs of
              Nil -> Nil
-             Cons x xs -> Cons (f x) (map f xs) in Pair map map
+             Cons x xs -> Cons (f x) (map f xs)
+       in Pair map map

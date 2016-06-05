@@ -24,6 +24,13 @@ data St = St{ colStack :: [Int] }
 startSt :: St
 startSt = St{ colStack = [0] } -- XX
 
+pushCol :: Int -> Parser a -> Parser a
+pushCol col p = push *> p <* pop
+  where
+    push = modifyState $ \st@St{..} -> st{ colStack = col:colStack }
+    pop = modifyState $ \st@St{..} -> st{ colStack = tail colStack }
+
+
 type Parser = Parsec [(SourcePos, Token)] St
 
 token' :: (Token -> Maybe a) -> Parser a
@@ -47,6 +54,12 @@ newline :: Parser Int
 newline = token' $ \t -> case t of
     Newline col -> return col
     _ -> Nothing
+
+newline' :: (Int -> Bool) -> Parser Int
+newline' good = do
+    i <- newline
+    guard $ good i
+    return i
 
 reserved :: String -> Parser ()
 reserved s = (<?> unwords ["keyword", "'" ++ s ++ "'"]) $ void $ satisfy (== s)
@@ -121,18 +134,13 @@ distinct xs = let xs' = sort xs in nub xs' == xs'
 vlist :: Parser a -> Parser [a]
 vlist p = do
     col <- newline
-    modifyState $ \st@St{..} -> st{ colStack = col:colStack }
-    let cont = try $ do
-            i <- newline
-            guard $ i == col
-    p `sepBy` cont
+    let cont = try $ newline' (== col)
+    pushCol col $ p `sepBy` cont
 
 multiline1 :: Parser a -> Parser [a]
 multiline1 p = do
     St{ colStack = col:_ } <- getState
-    let cont = try $ do
-            i <- newline
-            guard $ i > col
+    let cont = try $ newline' (> col)
     concat <$> many1 p `sepBy1` cont
 
 term :: Parser (Term SourcePos)
@@ -149,14 +157,29 @@ term = foldl1 app <$> multiline1 atom
                   , tag $ Lam <$> (symbol "\\" *> varName <* symbol "->") <*> term
                   ]
 
-    letBlock = Let <$> iblock_ (reserved "let") binding <*> (reserved "in" *> term)
+    letBlock = do
+        St{ colStack = col:_ } <- getState
+        bindings <- iblock_ (reserved "let") binding
+        body <- bodyNewline col <|> bodyHere
+        return $ Let bindings body
+      where
+        bodyHere = reserved "in" *> term
+        bodyNewline col = do
+            i <- try $ newline' (>= col)
+            pushCol i bodyHere
+
 
     caseBlock = iblock Case (reserved "case" *> term <* reserved "of") alt
 
     alt = (,) <$> (pat <* symbol "->") <*> term
 
 binding :: Parser (Var, Term SourcePos)
-binding = (,) <$> (varName <* symbol "=") <*> term
+binding = do
+    var <- varName
+    col' <- sourceColumn <$> getPosition
+    symbol "="
+    def <- pushCol (succ col') term
+    return (var, def)
 
 pat :: Parser (Pat SourcePos)
 pat = (<?> "pattern") $
@@ -174,22 +197,15 @@ iblock f header body = do
     St{ colStack = col:_ } <- getState
     x <- header
     let startInline = do
+            col' <- sourceColumn <$> getPosition
             y <- body
-            ys <- option [] startNewline
+            ys <- option [] $ startNewline col'
             return $ y:ys
-        startNewline = do
-            i <- try $ do
-                i <- newline
-                guard $ i > col
-                return i
-            modifyState $ \st@St{..} -> st{ colStack = i:colStack }
-            let cont = try $ do
-                    i' <- newline
-                    guard $ i' == i
-            ys <- body `sepBy` cont
-            modifyState $ \st@St{..} -> st{ colStack = tail colStack }
-            return ys
-    ys <- startNewline <|> startInline
+        startNewline col = do
+            i <- try $ newline' (>= col)
+            let cont = try $ newline' (== i)
+            pushCol i $ body `sepBy` cont
+    ys <- startNewline (col + 1) <|> startInline
     return $ f x ys
 
 tag :: Parser a -> Parser (Tagged a SourcePos)
