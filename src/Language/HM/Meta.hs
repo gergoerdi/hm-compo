@@ -53,7 +53,7 @@ instance Ord (STVar s t) where
 
 type Subst t v = IntMap (UTerm t v)
 
-class (Show (UTerm t v), Show v, Unifiable t, Variable v, Monad m) => MonadTC t v m | m t -> v, v m -> t where
+class (Unifiable t, Variable v, Monad m) => MonadTC t v m | m t -> v, v m -> t where
     freshVar :: m v
     readVar :: v -> m (Maybe (UTerm t v))
     writeVar :: v -> UTerm t v -> m ()
