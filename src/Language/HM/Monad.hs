@@ -1,9 +1,8 @@
-{-# LANGUAGE Rank2Types, ScopedTypeVariables #-}
+{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Language.HM.Monad where

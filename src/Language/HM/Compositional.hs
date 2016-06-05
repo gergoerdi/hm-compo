@@ -1,10 +1,5 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 module Language.HM.Compositional where
 
 import Language.HM.Monad
@@ -14,16 +9,11 @@ import Language.HM.Error
 import Text.Parsec.Pos
 
 import Control.Monad.ST
-import Data.STRef
 import Control.Unification.Types
+import Text.PrettyPrint.HughesPJClass (Doc, Pretty)
 
-import Text.PrettyPrint.HughesPJClass (Doc, Pretty, pPrint)
-
-import Control.Monad
 import Control.Monad.Except
 import Control.Monad.RWS
-import Data.Set (Set)
-import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
@@ -33,8 +23,6 @@ instance UErr (Err0 t v) t v where
     uerr = UErr
 
 data Typing0 var t v = Map var (UTerm t v) :- (UTerm t v)
-
-deriving instance (Show var, Show v, Show (t (UTerm t v))) => Show (Typing0 var t v)
 
 instance (Functor t) => Functor (Typing0 var t) where
     fmap f (mc :- t) = fmap (fmap f) mc :- fmap f t

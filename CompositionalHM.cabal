@@ -20,7 +20,12 @@ executable CompositionalHM
   main-is:             Main.hs
   
   -- other-modules:       
-  other-extensions:    Rank2Types, DeriveFunctor, DeriveFoldable, DeriveTraversable, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, MultiParamTypeClasses, GeneralizedNewtypeDeriving, RecordWildCards, FunctionalDependencies, StandaloneDeriving, UndecidableInstances, TupleSections, ScopedTypeVariables
+  other-extensions:    Rank2Types,
+                       FlexibleInstances, FlexibleContexts,
+                       MultiParamTypeClasses, FunctionalDependencies,
+                       GeneralizedNewtypeDeriving,
+                       RecordWildCards,
+                       TupleSections
   build-depends:       base >= 4.8,
                        transformers >= 0.4,
                        containers >= 0.5,

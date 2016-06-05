@@ -1,6 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
 module Language.HM.Linear where
 
@@ -11,12 +9,9 @@ import Language.HM.Error
 import Text.Parsec.Pos
 
 import Control.Monad.ST
-import Data.STRef
 import Control.Unification.Types
+import Text.PrettyPrint.HughesPJClass (Doc, Pretty)
 
-import Text.PrettyPrint.HughesPJClass
-
-import Control.Monad
 import Control.Monad.Except
 import Control.Monad.RWS
 import Data.Set (Set)
