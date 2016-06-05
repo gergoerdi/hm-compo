@@ -113,8 +113,7 @@ getMetaVarsN :: (HasMetaVars t v m a, Foldable f) => f a -> m [v]
 getMetaVarsN = fmap concat . traverse getMetaVars . toList
 
 zonk :: (Traversable t, MonadTC t v m) => UTerm t v -> m (UTerm t v)
-zonk (UTerm t) = UTerm <$> traverse zonk t
-zonk (UVar v) = zonkVar v
+zonk = fmap join . traverse zonkVar
 
 zonkVar :: (Traversable t, MonadTC t v m) => v -> m (UTerm t v)
 zonkVar v = do
@@ -125,11 +124,6 @@ zonkVar v = do
             t' <- zonk t
             writeVar v t'
             return t'
-
-zonkPoly :: (Traversable t, MonadTC t v m) => UTerm t (Either tv v) -> m (UTerm t (Either tv v))
-zonkPoly (UVar (Left a)) = return $ UVar (Left a)
-zonkPoly (UVar (Right v)) = fmap Right <$> zonkVar v
-zonkPoly (UTerm t) = UTerm <$> traverse zonkPoly t
 
 mono :: (Functor f) => f v -> f (Either tv v)
 mono = fmap Right
@@ -154,7 +148,13 @@ freezePoly :: MPolyTy s -> Maybe PolyTy
 freezePoly = traverse (either pure (const mzero))
 
 instantiate :: (Ord tv, MonadTC t v m, Traversable f) => f (Either tv v) -> m (f v)
-instantiate ptys = do
-    let Pair (Constant tvars) fill = traverse (either remap pure) ptys
+instantiate polyTys = do
+    let Pair (Constant tvars) fill = traverse (either remap pure) polyTys
     tvars <- traverse (const freshVar) $ Map.fromSet (const ()) tvars
     return $ runReader fill tvars
+
+freshen :: (Ord v, MonadTC t v m, Traversable f) => f v -> m (f v)
+freshen tys = do
+    let Pair (Constant vs) fill = traverse remap tys
+    vs' <- traverse (const freshVar) $ Map.fromSet (const ()) vs
+    return $ runReader fill vs'

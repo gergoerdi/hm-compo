@@ -90,18 +90,12 @@ zonkTyping (mc :- t) = do
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
 
-instantiateTyping :: MTyping s -> M s loc (MTyping s)
-instantiateTyping = instantiate <=< gen <=< zonkTyping
-  where
-    gen :: MTyping s -> M s loc (Typing (Either TVar (MVar s)))
-    gen = generalize freshTVar (const True)
-
 tyInfer :: Term loc -> M s loc (MTyping s)
 tyInfer le@(Tagged _ e) = withLoc le $ case e of
     Var v -> do
         vt <- asks $ Map.lookup v . polyVars
         case vt of
-            Just typ -> instantiateTyping typ
+            Just typ -> freshen =<< zonkTyping typ
             Nothing -> throwError $ Err $ unwords ["Not in scope:", show v]
     Con dcon -> do
         ct <- askDataCon dcon

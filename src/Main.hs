@@ -3,7 +3,7 @@ import Language.HM.Pretty
 import qualified Language.HM.Linear as Linear
 import Language.HM.Compositional (Typing0((:-)))
 import qualified Language.HM.Compositional as Compo
-import Language.HM.Meta (freezePoly, generalize, zonk, zonkPoly, MTy)
+import Language.HM.Meta (freezePoly, generalize, zonk, MTy)
 import Language.HM.Parser
 
 import Control.Unification
@@ -53,7 +53,6 @@ runLinear :: (Pretty loc)
           -> Either Doc [(Var, PolyTy)]
 runLinear sourceName dataCons bindings = runST $ Linear.runM sourceName dataCons $ do
     polyVars <- Linear.tyCheckBinds bindings $ asks Linear.polyVars
-    -- polyVars <- traverse zonkPoly polyVars
     return $ map freeze . Map.toList $ polyVars
   where
     freeze (name, mty) = (name, fromMaybe (error err) $ freezePoly mty)
@@ -71,7 +70,6 @@ runCompo sourceName dataCons bindings = runST $ Compo.runM sourceName dataCons $
     Compo.tyCheckBinds bindings $ \mc -> do
         pvars <- asks Compo.polyVars
         let monos = [ (name, t) | (name, mc :- t) <- Map.toList pvars ]
-        -- tys <- runIdentityT $ zip (map fst monos) <$> (applyBindingsAll . map snd $ monos)
         tys <- traverse (traverse zonk) monos
         return $ map freeze tys
   where
