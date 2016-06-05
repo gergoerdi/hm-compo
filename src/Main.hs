@@ -32,13 +32,13 @@ main = do
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    let result = prettyTops $ runLinear sourceName dataDefs' varDefs
-    print result
-    putStrLn ""
+    -- let result = prettyTops $ runLinear sourceName dataDefs' varDefs
+    -- print result
+    -- putStrLn ""
     let result = prettyTops $ runCompo sourceName dataDefs' varDefs
     print result
   where
-    sourceName = "demo/demo2.hm"
+    sourceName = "demo/demo1.hm"
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
