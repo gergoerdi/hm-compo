@@ -26,7 +26,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Graph
 
 type Err s loc = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
 
@@ -155,9 +154,7 @@ tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of
         return $ mc :- t
 
 tyCheckBinds :: [(Var, Term loc)] -> (Map Var (MTy s) -> M s loc a) -> M s loc a
-tyCheckBinds binds body = do
-    let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
-    go mempty (map flattenSCC $ stronglyConnComp g)
+tyCheckBinds binds body = go mempty $ partitionBinds binds
   where
     go mc0 (bs:bss) = do
         let newVars = map fst bs

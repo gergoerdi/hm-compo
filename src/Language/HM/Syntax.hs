@@ -13,6 +13,7 @@ import Data.Functor.Fixedpoint
 import Control.Monad.Writer
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Graph
 
 data TyF tcon a
     = TFun a a
@@ -98,3 +99,8 @@ freeVarsOfPat = execWriter . go
         PWild -> return ()
         PVar v -> tell $ Set.singleton v
         PCon _ ps -> traverse_ go ps
+
+partitionBinds :: [(Var, Term loc)] -> [[(Var, Term loc)]]
+partitionBinds binds = map flattenSCC . stronglyConnComp $ g
+  where
+    g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]

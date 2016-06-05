@@ -23,7 +23,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Graph
 
 type Err s loc = Tagged (Err0 Ty0 (MVar s)) (loc, Doc)
 
@@ -81,9 +80,7 @@ tyCheck t le@(Tagged _ e) = withLoc le $ case e of
     Let binds e -> tyCheckBinds binds $ tyCheck t e
 
 tyCheckBinds :: [(Var, Term loc)] -> M s loc a -> M s loc a
-tyCheckBinds binds body = do
-    let g = [((v, e), v, Set.toList (freeVarsOfTerm e)) | (v, e) <- binds]
-    go (map flattenSCC $ stronglyConnComp g)
+tyCheckBinds binds body = go $ partitionBinds binds
   where
     go (bs:bss) = do
         tvs <- traverse (const $ UVar <$> freshVar) bs
