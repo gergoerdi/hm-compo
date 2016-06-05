@@ -49,10 +49,10 @@ newline = token' $ \t -> case t of
     _ -> Nothing
 
 reserved :: String -> Parser ()
-reserved s = (<?> unwords ["keyword", show s]) $ void $ satisfy (== s)
+reserved s = (<?> unwords ["keyword", "'" ++ s ++ "'"]) $ void $ satisfy (== s)
 
 symbol :: String -> Parser ()
-symbol s = (<?> unwords ["symbol", show s]) $
+symbol s = (<?> unwords ["symbol", "'" ++ s ++ "'"]) $
            token' $ \t -> case t of
                Symbol s' | s' == s -> Just ()
                _ -> Nothing
