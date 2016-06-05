@@ -30,9 +30,7 @@ data R loc = R{ dataCons :: Map DCon PolyTy
 type Located err loc = Tagged err (loc, Doc)
 
 newtype TC ctx err s loc a = TC{ unTC :: ExceptT (Located err loc) (RWST (R loc, ctx) () Int (ST s)) a }
-                           deriving ( Functor, Applicative, Monad
-                                    , MonadState Int
-                                    )
+                           deriving (Functor, Applicative, Monad)
 
 instance MonadReader ctx (TC ctx err s loc) where
     ask = TC $ asks snd
@@ -46,7 +44,7 @@ instance MonadError err (TC ctx err s loc) where
 
 instance MonadTC Ty0 (MVar s) (TC ctx err s loc) where
     freshVar = do
-        id <- state $ \i -> (i, succ i)
+        id <- TC $ state $ \i -> (i, succ i)
         ref <- TC . lift . lift $ newSTRef Nothing
         return $ STVar id ref
     readVar (STVar _ ref) = TC . lift . lift $ readSTRef ref
