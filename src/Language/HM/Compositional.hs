@@ -7,6 +7,7 @@ import Language.HM.Monad
 import Language.HM.Syntax
 import Language.HM.Meta
 import Language.HM.Error
+import Language.HM.Pretty (pPrintAlt)
 import Text.Parsec.Pos
 
 import Control.Monad.ST
@@ -19,7 +20,8 @@ import Control.Monad.RWS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
-data ErrC0 t v = UErrC [Map Var (UTerm t v)] (Maybe Var) (UTerm t v) (UTerm t v) (UFailure t v)
+data ErrC0 t v = UErrC [(Doc, Typing0 Var t v)] (Maybe Var) (UTerm t v) (UTerm t v) (UFailure t v)
+               | BErrC (Doc, Map Var (UTerm t v)) (Doc, Typing0 Var t v) Var (UTerm t v) (UTerm t v) (UFailure t v)
                | ErrC String
 deriving instance (Show (t (UTerm t v)), Show v) => Show (ErrC0 t v)
 
@@ -29,6 +31,7 @@ instance (Ord v, Show v) => Pretty (ErrC0 Ty0 v) where
 type Err s loc = Tagged (ErrC0 Ty0 (MVar s)) (loc, Doc)
 
 data Typing0 var t v = Map var (UTerm t v) :- (UTerm t v)
+deriving instance (Show (t (UTerm t v)), Show v, Show var) => Show (Typing0 var t v)
 
 instance (Functor t) => Functor (Typing0 var t) where
     fmap f (mc :- t) = fmap (fmap f) mc :- fmap f t
@@ -64,31 +67,50 @@ withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
 unzipTypings :: [Typing0 var t v] -> ([Map var (UTerm t v)], [UTerm t v])
 unzipTypings typs = unzip [(mc, t) | mc :- t <- typs]
 
-unifyTypings :: [Map Var (MTy s)] -> [(MTy s, MTy s)] -> M s loc (Map Var (MTy s))
-unifyTypings mcs tyeqs = do
-    forM_ tyeqs $ \(t, u) -> do
-        res <- runExceptT $ unify t u
-        case res of
-            Left err -> do
-                mcs <- traverse (traverse zonk) mcs
-                t <- zonk t
-                u <- zonk u
-                throwError $ UErrC mcs Nothing t u err
-            Right ok -> return ok
+unifyTypings :: [(Doc, MTyping s)] -> [(MTy s, MTy s)] -> M s loc (Map Var (MTy s))
+unifyTypings ucs tyeqs = do
+    forM_ tyeqs $ \(t, u) -> runUnify Nothing t u
     flip Map.traverseWithKey (zipMaps mcs) $ \var ts -> case ts of
         [] -> UVar <$> freshVar
         [t] -> return t
         (t:us) -> do
-            forM_ ts $ \u -> do
-                res <- runExceptT $ unify t u
-                case res of
-                    Left err -> do
-                        mcs <- traverse (traverse zonk) mcs
-                        t <- zonk t
-                        u <- zonk u
-                        throwError $ UErrC mcs (Just var) t u err
-                    Right ok -> return ok
+            forM_ ts $ \u -> runUnify (Just var) t u
             return t
+  where
+    mcs = [mc | (_ , mc :- _) <- ucs]
+
+    runUnify var t u = do
+        res <- runExceptT $ unify t u
+        case res of
+            Left err -> do
+                ucs <- traverse (traverse zonkTyping) ucs
+                t <- zonk t
+                u <- zonk u
+                throwError $ UErrC ucs var t u err
+            Right ok -> return ok
+
+unifyBindings :: (Doc, Map Var (MTy s)) -> (Doc, MTyping s) -> M s loc (MTyping s)
+unifyBindings (docBind, mcBinds) uc = do
+    mc <- flip Map.traverseWithKey (zipMaps [mcBinds, mc]) $ \var ts -> case ts of
+        [] -> UVar <$> freshVar
+        [t] -> return t
+        (t:us) -> do
+            forM_ ts $ \u -> runUnify var t u
+            return t
+    return $ mc :- t
+  where
+    (doc, mc :- t) = uc
+
+    runUnify var t u = do
+        res <- runExceptT $ unify t u
+        case res of
+            Left err -> do
+                mcBinds <- traverse zonk mcBinds
+                uc <- traverse zonkTyping uc
+                t <- zonk t
+                u <- zonk u
+                throwError $ BErrC (docBind, mcBinds) uc var t u err
+            Right ok -> return ok
 
 unifyMany :: [MTy s] -> ExceptT (UFailure Ty0 (MVar s)) (M s loc) (MTy s)
 unifyMany [] = UVar <$> lift freshVar
@@ -105,6 +127,9 @@ zonkTyping (mc :- t) = do
 
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
+
+uctx :: (Pretty a) => a -> MTyping s -> (Doc, MTyping s)
+uctx e typ = (pPrint e, typ)
 
 tyInfer :: Term loc -> M s loc (MTyping s)
 tyInfer le@(Tagged _ e) = withLoc le $ case e of
@@ -124,27 +149,28 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
         u <- maybe (UVar <$> freshVar) return $ Map.lookup v mc
         return $ Map.delete v mc :- (u ~> t)
     App f e -> do
-        mc1 :- t <- tyInfer f
-        mc2 :- u <- tyInfer e
+        typ1@(_ :- t) <- tyInfer f
+        typ2@(_ :- u) <- tyInfer e
         a <- UVar <$> freshVar
-        mc <- unifyTypings [mc1, mc2] [(u ~> a, t)]
+        mc <- unifyTypings [uctx f typ1, uctx e typ2] [(u ~> a, t)]
         return $ mc :- a
     Case e as -> do
-        mc0 :- t0 <- tyInfer e
-        typs <- forM as $ \(pat, e) -> do
-            mcPat :- tPat <- tyInferPat pat
-            mc :- t <- withMonoVars (Map.keys mcPat) $ tyInfer e
-            unifyTypings [mc, mcPat] [(t0, tPat)]
+        typ0@(mc0 :- t0) <- tyInfer e
+        ucs <- forM as $ \(pat, e) -> do
+            typPat@(mcPat :- tPat) <- tyInferPat pat
+            typ@(mc :- t) <- withMonoVars (Map.keys mcPat) $ tyInfer e
+            unifyTypings [uctx e typ, uctx pat typPat] [(t0, tPat)]
             let mc' = mc `Map.difference` mcPat
-            return $ mc' :- t
-        let (mcs, ts) = unzipTypings typs
+            return (pPrintAlt pat e, mc' :- t)
+        let (_mcs, ts) = unzipTypings (map snd ucs)
         t <- UVar <$> freshVar
-        mc <- unifyTypings (mc0:mcs) $ map (t,) ts
+        mc <- unifyTypings (uctx e typ0:ucs) $ map (t,) ts
         return $ mc :- t
-    Let binds e -> tyCheckBinds binds $ \mc0 -> do
-        mc :- t <- tyInfer e
-        mc <- unifyTypings [mc, mc0] []
-        return $ mc :- t
+    Let binds e -> tyCheckBinds binds $ \mcBinds -> do
+        typBody <- tyInfer e
+        unifyBindings (bindDoc, mcBinds) (uctx e typBody)
+      where
+        bindDoc = text "TODO: bindDoc"
 
 tyInferPat :: Pat loc -> M s loc (MTyping s)
 tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of
@@ -163,8 +189,9 @@ tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of
         unless (length ps == length tArgs) $
           throwError $ ErrC $ unwords ["Bad pattern arity:", show $ length ps, show $ length tArgs]
         typs <- traverse tyInferPat ps
-        let (mcs, ts) = unzipTypings typs
-        mc <- unifyTypings mcs (zip tArgs ts)
+        let ucs = zipWith uctx ps typs
+            (_, ts) = unzipTypings typs
+        mc <- unifyTypings ucs (zip tArgs ts)
         return $ mc :- t
 
 tyCheckBinds :: [(Var, Term loc)] -> (Map Var (MTy s) -> M s loc a) -> M s loc a
@@ -175,8 +202,10 @@ tyCheckBinds binds body = go mempty $ partitionBinds binds
         pc <- withMonoVars newVars $ do
             typings <- zip newVars <$> traverse (tyInfer . snd) bs
             let (mcs, ts) = unzipTypings $ map snd typings
-                mcRecs = [Map.singleton v t | (v, _ :- t) <- typings]
-            unifyTypings (mcs ++ mcRecs) []
+                typRecs = [Map.singleton v t :- t | (v, _ :- t) <- typings]
+                ucs = map (uncurry uctx) typings
+                ucRecs = zipWith uctx (map fst bs) typRecs
+            unifyTypings (ucs ++ ucRecs) []
             let newVarSet = Map.fromList [(v, ()) | v <- newVars]
                 unshadow (mc :- t) = (mc `Map.difference` newVarSet) :- t
             return $ fmap unshadow $ Map.fromList typings

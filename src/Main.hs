@@ -38,7 +38,7 @@ main = do
     let result = prettyTops $ runCompo sourceName dataDefs' varDefs
     print result
   where
-    sourceName = "demo/demo1.hm"
+    sourceName = "demo/demo2.hm"
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err

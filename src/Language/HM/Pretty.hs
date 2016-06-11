@@ -73,9 +73,10 @@ instance Pretty (TermF String String a) where
         App f e -> maybeParens (prec >= 1) $
                    pPrintPrec level 0 f <+> pPrintPrec level 1 e
         Case e alts -> hang (text "case" <+> pPrintPrec level prec e <+> text "of") 2
-                       (vcat (map pPrintAlt alts))
-      where
-        pPrintAlt (p, e) = pPrint p <+> text "->" <+> pPrint e
+                       (vcat (map (uncurry pPrintAlt) alts))
+
+pPrintAlt :: Pat0 String String loc -> Term0 String String loc -> Doc
+pPrintAlt p e = pPrint p <+> text "->" <+> pPrint e
 
 instance (Pretty a) => Pretty (Tagged a tag) where
     pPrintPrec level prec = pPrintPrec level prec . unTag
