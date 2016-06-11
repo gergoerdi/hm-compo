@@ -87,3 +87,6 @@ instance Pretty SourcePos where
                       ]
       where
         coords = hcat [int (sourceLine src), comma, int (sourceColumn src)]
+
+dcolon :: Doc
+dcolon = text "::"

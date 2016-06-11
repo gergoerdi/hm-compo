@@ -74,8 +74,8 @@ unifyTypings ucs tyeqs = do
                 throwError $ UErrC ucs var t u err
             Right ok -> return ok
 
-unifyBindings :: (Doc, Map Var (MTy s)) -> (Doc, MTyping s) -> M s loc (MTyping s)
-unifyBindings (docBind, mcBinds) uc = do
+unifyBindings :: Map Var (MTy s) -> (Doc, MTyping s) -> M s loc (MTyping s)
+unifyBindings mcBinds uc = do
     mc <- flip Map.traverseWithKey (zipMaps [mcBinds, mc]) $ \var ts -> case ts of
         [] -> UVar <$> freshVar
         [t] -> return t
@@ -94,7 +94,7 @@ unifyBindings (docBind, mcBinds) uc = do
                 uc <- traverse zonkTyping uc
                 t <- zonk t
                 u <- zonk u
-                throwError $ BErrC (docBind, mcBinds) uc var t u err
+                throwError $ BErrC mcBinds uc var t u err
             Right ok -> return ok
 
 unifyMany :: [MTy s] -> ExceptT (UFailure Ty0 (MVar s)) (M s loc) (MTy s)
@@ -153,9 +153,7 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
         return $ mc :- t
     Let binds e -> tyCheckBinds binds $ \mcBinds -> do
         typBody <- tyInfer e
-        unifyBindings (bindDoc, mcBinds) (uctx e typBody)
-      where
-        bindDoc = text "TODO: bindDoc"
+        unifyBindings mcBinds (uctx e typBody)
 
 tyInferPat :: Pat loc -> M s loc (MTyping s)
 tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of

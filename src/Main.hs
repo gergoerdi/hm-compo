@@ -83,6 +83,3 @@ runCompo sourceName dataCons bindings = runST $ Compo.runM sourceName dataCons $
         err = unwords [ "Ugh! Type variables escaped in type of"
                       , show name, "as", show mty
                       ]
-
-dcolon :: Doc
-dcolon = text "::"
