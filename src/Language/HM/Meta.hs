@@ -59,36 +59,35 @@ class (Unifiable t, Variable v, Monad m) => MonadTC t v m | m t -> v, v m -> t w
     writeVar :: v -> UTerm t v -> m ()
 
 unify :: (MonadTC t v m) => UTerm t v -> UTerm t v -> ExceptT (UFailure t v) m ()
-unify (UVar a)  (UVar b) | a == b = return ()
-unify (UVar a)  t        = unifyVar a t
-unify t         (UVar b) = unifyVar b t
-unify (UTerm t) (UTerm u) = case zipMatch t u of
-    Nothing -> throwError $ MismatchFailure t u
-    Just t' -> traverse_ (either (const $ pure ()) (uncurry unify)) t'
-
-unifyVar :: (MonadTC t v m) => v -> UTerm t v -> ExceptT (UFailure t v) m ()
-unifyVar v t = do
-    deref <- lift $ readVar v
-    -- traceShow ("unifyVar", v, t, deref) $ return ()
-    case deref of
-        Just u -> unify u t
-        Nothing -> unifyUnbound
+unify = unify_ False
   where
-    unifyUnbound = case t of
-        UVar v' -> do
-            deref' <- lift $ readVar v'
-            case deref' of
-                Just u -> unify (UVar v) u
-                Nothing -> lift $ writeVar v t
-        UTerm u -> do
-            checkOccurs u
-            lift $ writeVar v t
+    unify_ rev (UVar a)  (UVar b) | a == b = return ()
+    unify_ rev (UVar a)  t        = unifyVar rev a t
+    unify_ rev t         (UVar b) = unifyVar (not rev) b t
+    unify_ rev (UTerm t) (UTerm u) = case zipMatch t u of
+        Nothing -> throwError $ (if rev then flip else id) MismatchFailure t u
+        Just t' -> traverse_ (either (const $ pure ()) (uncurry $ unify_ rev)) t'
 
-    checkOccurs u = do
-        vs <- lift $ getMetaVars u
-        when (v `elem` vs) $ do
-            t' <- lift $ zonk t
-            throwError $ OccursFailure v t'
+    unifyVar rev v t = do
+        deref <- lift $ readVar v
+        -- traceShow ("unifyVar", v, t, deref) $ return ()
+        case deref of
+            Just u -> unify_ rev u t
+            Nothing -> case t of
+                UVar v' -> do
+                    deref' <- lift $ readVar v'
+                    case deref' of
+                        Just u -> unify_ rev (UVar v) u
+                        Nothing -> lift $ writeVar v t
+                UTerm u -> do
+                    checkOccurs u
+                    lift $ writeVar v t
+      where
+        checkOccurs u = do
+            vs <- lift $ getMetaVars u
+            when (v `elem` vs) $ do
+                t' <- lift $ zonk t
+                throwError $ OccursFailure v t'
 
 class (MonadTC t v m) => HasMetaVars t v m a where
     getMetaVars :: a -> m [v]
