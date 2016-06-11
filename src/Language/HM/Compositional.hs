@@ -7,7 +7,7 @@ import Language.HM.Monad
 import Language.HM.Syntax
 import Language.HM.Meta
 import Language.HM.Error
-import Language.HM.Pretty (pPrintAlt)
+import Language.HM.Pretty
 import Text.Parsec.Pos
 
 import Control.Monad.ST
@@ -25,8 +25,27 @@ data ErrC0 t v = UErrC [(Doc, Typing0 Var t v)] (Maybe Var) (UTerm t v) (UTerm t
                | ErrC String
 deriving instance (Show (t (UTerm t v)), Show v) => Show (ErrC0 t v)
 
+pprErrC :: ErrC0 Ty0 v -> Ppr v Doc
+pprErrC (UErrC ucs var t u uerr) = fmap vcat . sequenceA $
+    [ flip (<>) colon <$> case var of
+          Nothing -> typesPart
+          Just v -> fmap sep . sequenceA $
+              [ typesPart
+              , pure $ text "when unifying"
+              , pure $ quotes $ text v
+              ]
+    ]
+  where
+    typesPart = fmap sep . sequenceA $
+      [ pure $ text "Cannot unify", quotes <$> pprType 0 t
+      , pure $ text "with"
+      , quotes <$> pprType 0 u
+      ]
+pprErrC (BErrC mc uc var t u uerr) = undefined
+pprErrC (ErrC s) = pure $ text s
+
 instance (Ord v, Show v) => Pretty (ErrC0 Ty0 v) where
-    pPrintPrec _level _prec err = text $ show err
+    pPrintPrec _level _prec = runPpr . pprErrC
 
 type Err s loc = Tagged (ErrC0 Ty0 (MVar s)) (loc, Doc)
 
