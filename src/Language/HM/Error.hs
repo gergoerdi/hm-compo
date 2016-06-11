@@ -26,23 +26,24 @@ instance Fallible t v (Err0 t v) where
     mismatchFailure t u = UErr $ mismatchFailure t u
 -}
 
+pprUFailure :: UFailure Ty0 v -> Ppr v Doc
+pprUFailure (OccursFailure v t) = fmap hsep . sequenceA $
+    [ pure $ text "Infinite type in"
+    , quotes <$> pprVar v
+    , pure $ text "~"
+    , quotes <$> pprType 0 t
+    ]
+pprUFailure (MismatchFailure t u) = fmap hsep . sequenceA $
+    [ (text "Cannot unify" <+>) <$> quotes <$> pprType0 0 t
+    , (text "with" <+>) <$> quotes <$> pprType0 0 u
+    ]
+
 pprErr :: Err0 Ty0 v -> Ppr v Doc
-pprErr (UErr t0 u0 uerr) = case uerr of
-    OccursFailure v t ->
-        header "Infinite type" $ hsep <$> sequenceA
-          [ pure $ text "Infinite type in"
-          , pprVar v
-          , pure $ text "~"
-          , pprType 0 t
-          ]
-    MismatchFailure t u ->
-        header "Type mismatch" $ vcat <$> sequenceA
-          [ (text "Cannot unify" <+>) <$> pprType0 0 t
-          , (text "with" <+>) <$> pprType0 0 u]
+pprErr (UErr t0 u0 uerr) = header "Type mismatch" $ pprUFailure uerr
   where
     header' s t0' u0' d = hang (text s <> colon) 4 $
-                          vcat $ [ text "Expected:" <+> t0'
-                                 , text "Got:" <+> u0'
+                          vcat $ [ text "Expected:" <+> quotes t0'
+                                 , text "Got:" <+> quotes u0'
                                  , text ""
                                  , d
                                  ]

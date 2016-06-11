@@ -14,11 +14,13 @@ import Control.Monad.ST
 import Control.Unification.Types
 import Text.PrettyPrint.HughesPJClass hiding ((<>))
 import Text.PrettyPrint hiding ((<>))
+import qualified Text.PrettyPrint.Boxes as Boxes
 
 import Control.Monad.Except
 import Control.Monad.RWS
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.List (sort, nub)
 
 data ErrC0 t v = UErrC [(Doc, Typing0 Var t v)] (Maybe Var) (UTerm t v) (UTerm t v) (UFailure t v)
                | BErrC (Doc, Map Var (UTerm t v)) (Doc, Typing0 Var t v) Var (UTerm t v) (UTerm t v) (UFailure t v)
@@ -34,6 +36,10 @@ pprErrC (UErrC ucs var t u uerr) = fmap vcat . sequenceA $
               , pure $ text "when unifying"
               , pure $ quotes $ text v
               ]
+    , (<+>)
+        <$> pprUFailure uerr
+        <*> pure (text "in the following context:")
+    , text . Boxes.render <$> Boxes.hsep 4 Boxes.top <$> cols
     ]
   where
     typesPart = fmap sep . sequenceA $
@@ -41,6 +47,25 @@ pprErrC (UErrC ucs var t u uerr) = fmap vcat . sequenceA $
       , pure $ text "with"
       , quotes <$> pprType 0 u
       ]
+
+    (vs, mcs') = fillMaps [mc | (_, mc :- t) <- ucs]
+    ucs' = zipWith (\(doc, (_ :- t)) vars -> (doc, t, vars)) ucs mcs'
+    cols = map (Boxes.vcat Boxes.left) <$> (headerCol:) <$> traverse col ucs'
+
+    headerCol = (Boxes.text ""):(Boxes.text ""):
+                [ Boxes.text v Boxes.<+> Boxes.text "::"
+                | v <- vs
+                ]
+
+    col (doc, t, vars) = sequenceA $
+                (pure $ toBox doc):
+                (toBox <$> pprType 0 t):
+                [ maybe (pure $ Boxes.text "") (fmap toBox . pprType 0) vt
+                | (_, vt) <- Map.toList vars
+                ]
+
+    toBox = Boxes.text . show
+
 pprErrC (BErrC mc uc var t u uerr) = undefined
 pprErrC (ErrC s) = pure $ text s
 
@@ -146,6 +171,16 @@ zonkTyping (mc :- t) = do
 
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
+
+fillMaps :: (Ord k) => [Map k a] -> ([k], [Map k (Maybe a)])
+fillMaps ms = (ks, map fill ms)
+  where
+    -- TODO: we could do this much more efficient with repeated merging
+    ks = nub . sort . concat $ map Map.keys ms
+
+    m0 = Map.fromList [(k, Nothing) | k <- ks]
+
+    fill m = Map.union (Just <$> m) m0
 
 uctx :: (Pretty a) => a -> MTyping s -> (Doc, MTyping s)
 uctx e typ = (pPrint e, typ)

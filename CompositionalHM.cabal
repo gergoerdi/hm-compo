@@ -30,6 +30,7 @@ executable CompositionalHM
                        transformers >= 0.4,
                        containers >= 0.5,
                        pretty >=1.1,
+                       boxes >= 0.1.4,
                        mtl >= 2.2,
                        unification-fd >= 0.10,
                        parsec >= 3.1,
