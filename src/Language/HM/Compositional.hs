@@ -1,12 +1,16 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards, TupleSections #-}
-{-# LANGUAGE StandaloneDeriving, FlexibleContexts, UndecidableInstances #-}
-module Language.HM.Compositional where
+module Language.HM.Compositional
+       ( polyVars, runM
+       , tyCheckBinds
+       , Typing0(..)
+       )
+       where
 
 import Language.HM.Monad
 import Language.HM.Syntax
 import Language.HM.Meta
-import Language.HM.Error
+import Language.HM.Compositional.Error
 import Language.HM.Pretty
 import Text.Parsec.Pos
 
@@ -22,70 +26,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.List (sort, nub)
 
-data ErrC0 t v = UErrC [(Doc, Typing0 Var t v)] (Maybe Var) (UTerm t v) (UTerm t v) (UFailure t v)
-               | BErrC (Doc, Map Var (UTerm t v)) (Doc, Typing0 Var t v) Var (UTerm t v) (UTerm t v) (UFailure t v)
-               | ErrC String
-deriving instance (Show (t (UTerm t v)), Show v) => Show (ErrC0 t v)
-
-pprErrC :: ErrC0 Ty0 v -> Ppr v Doc
-pprErrC (UErrC ucs var t u uerr) = fmap vcat . sequenceA $
-    [ flip (<>) colon <$> case var of
-          Nothing -> typesPart
-          Just v -> fmap sep . sequenceA $
-              [ typesPart
-              , pure $ text "when unifying"
-              , pure $ quotes $ text v
-              ]
-    , (<+>)
-        <$> pprUFailure uerr
-        <*> pure (text "in the following context:")
-    , text . Boxes.render <$> Boxes.hsep 4 Boxes.top <$> cols
-    ]
-  where
-    typesPart = fmap sep . sequenceA $
-      [ pure $ text "Cannot unify", quotes <$> pprType 0 t
-      , pure $ text "with"
-      , quotes <$> pprType 0 u
-      ]
-
-    (vs, mcs') = fillMaps [mc | (_, mc :- t) <- ucs]
-    ucs' = zipWith (\(doc, (_ :- t)) vars -> (doc, t, vars)) ucs mcs'
-    cols = map (Boxes.vcat Boxes.left) <$> (headerCol:) <$> traverse col ucs'
-
-    headerCol = (Boxes.text ""):(Boxes.text ""):
-                [ Boxes.text v Boxes.<+> Boxes.text "::"
-                | v <- vs
-                ]
-
-    col (doc, t, vars) = sequenceA $
-                (pure $ toBox doc):
-                (toBox <$> pprType 0 t):
-                [ maybe (pure $ Boxes.text "") (fmap toBox . pprType 0) vt
-                | (_, vt) <- Map.toList vars
-                ]
-
-    toBox = Boxes.text . show
-
-pprErrC (BErrC mc uc var t u uerr) = undefined
-pprErrC (ErrC s) = pure $ text s
-
-instance (Ord v, Show v) => Pretty (ErrC0 Ty0 v) where
-    pPrintPrec _level _prec = runPpr . pprErrC
-
 type Err s loc = Tagged (ErrC0 Ty0 (MVar s)) (loc, Doc)
-
-data Typing0 var t v = Map var (UTerm t v) :- (UTerm t v)
-deriving instance (Show (t (UTerm t v)), Show v, Show var) => Show (Typing0 var t v)
-
-instance (Functor t) => Functor (Typing0 var t) where
-    fmap f (mc :- t) = fmap (fmap f) mc :- fmap f t
-
-instance (Foldable t) => Foldable (Typing0 var t) where
-    foldMap f (mc :- t) = foldMap (foldMap f) mc <> foldMap f t
-
-instance (Traversable t) => Traversable (Typing0 var t) where
-    traverse f (mc :- t) = (:-) <$> traverse (traverse f) mc <*> traverse f t
-
 type Typing = Typing0 Var Ty0
 type MTyping s = Typing (MVar s)
 
@@ -172,16 +113,6 @@ zonkTyping (mc :- t) = do
 zipMaps :: (Ord k) => [Map k a] -> Map k [a]
 zipMaps = Map.unionsWith (++) . map (fmap (:[]))
 
-fillMaps :: (Ord k) => [Map k a] -> ([k], [Map k (Maybe a)])
-fillMaps ms = (ks, map fill ms)
-  where
-    -- TODO: we could do this much more efficient with repeated merging
-    ks = nub . sort . concat $ map Map.keys ms
-
-    m0 = Map.fromList [(k, Nothing) | k <- ks]
-
-    fill m = Map.union (Just <$> m) m0
-
 uctx :: (Pretty a) => a -> MTyping s -> (Doc, MTyping s)
 uctx e typ = (pPrint e, typ)
 
@@ -216,7 +147,7 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
             unifyTypings [uctx e typ, uctx pat typPat] [(t0, tPat)]
             let mc' = mc `Map.difference` mcPat
             return (pPrintAlt pat e, mc' :- t)
-        let (_mcs, ts) = unzipTypings (map snd ucs)
+        let (_, ts) = unzipTypings (map snd ucs)
         t <- UVar <$> freshVar
         mc <- unifyTypings (uctx e typ0:ucs) $ map (t,) ts
         return $ mc :- t
@@ -254,11 +185,10 @@ tyCheckBinds binds body = go mempty $ partitionBinds binds
     go mc0 (bs:bss) = do
         let newVars = map fst bs
         pc <- withMonoVars newVars $ do
-            typings <- zip newVars <$> traverse (tyInfer . snd) bs
-            let (mcs, ts) = unzipTypings $ map snd typings
-                typRecs = [Map.singleton v t :- t | (v, _ :- t) <- typings]
+            typings <- traverse (traverse tyInfer) bs
+            let typRecs = [Map.singleton v t :- t | (v, _ :- t) <- typings]
                 ucs = map (uncurry uctx) typings
-                ucRecs = zipWith uctx (map fst bs) typRecs
+                ucRecs = zipWith uctx newVars typRecs
             unifyTypings (ucs ++ ucRecs) []
             let newVarSet = Map.fromList [(v, ()) | v <- newVars]
                 unshadow (mc :- t) = (mc `Map.difference` newVarSet) :- t

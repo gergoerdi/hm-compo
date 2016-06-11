@@ -1,7 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances, FlexibleContexts #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 module Language.HM.Error where
 
@@ -18,14 +16,6 @@ import Text.PrettyPrint.HughesPJClass
 data Err0 t v = UErr (UTerm t v) (UTerm t v) (UFailure t v)
               | Err String
 
-deriving instance (Show v, Show (t (UTerm t v))) => Show (Err0 t v)
-
-{-
-instance Fallible t v (Err0 t v) where
-    occursFailure v t = UErr $ occursFailure v t
-    mismatchFailure t u = UErr $ mismatchFailure t u
--}
-
 pprUFailure :: UFailure Ty0 v -> Ppr v Doc
 pprUFailure (OccursFailure v t) = fmap hsep . sequenceA $
     [ pure $ text "Infinite type in"
@@ -39,15 +29,18 @@ pprUFailure (MismatchFailure t u) = fmap hsep . sequenceA $
     ]
 
 pprErr :: Err0 Ty0 v -> Ppr v Doc
-pprErr (UErr t0 u0 uerr) = header "Type mismatch" $ pprUFailure uerr
+pprErr (UErr t u uerr) =
+    header "Type mismatch" <$>
+      pprType 0 t <*>
+      pprType 0 u <*>
+      pprUFailure uerr
   where
-    header' s t0' u0' d = hang (text s <> colon) 4 $
-                          vcat $ [ text "Expected:" <+> quotes t0'
-                                 , text "Got:" <+> quotes u0'
-                                 , text ""
-                                 , d
-                                 ]
-    header s d = header' s <$> pprType 0 t0 <*> pprType 0 u0 <*> d
+    header s t' u' d = hang (text s <> colon) 4 $
+                       vcat $ [ text "Expected:" <+> quotes t'
+                              , text "Got:" <+> quotes u'
+                              , text ""
+                              , d
+                              ]
 pprErr (Err s) = pure $ text s
 
 instance (Ord v) => Pretty (Err0 Ty0 v) where
