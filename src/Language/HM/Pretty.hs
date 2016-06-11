@@ -29,7 +29,7 @@ pprType0 :: Rational -> Ty0 (UTerm Ty0 v) -> Ppr v Doc
 pprType0 = go
   where
     go p t = case t of
-        TFun t u -> (\ t u -> par 1 $ t <+> text "->" <+> u) <$> pprType 1 t <*> pprType 0 u
+        TFun t u -> (\ t u -> par 1 $ t <+> text "→" <+> u) <$> pprType 1 t <*> pprType 0 u
         TApp tcon [] -> pure $ text tcon
         TApp tcon targs -> (\ts -> par 2 $ text tcon <+> hsep ts) <$> traverse (pprType 2) targs
       where
