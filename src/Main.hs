@@ -22,11 +22,20 @@ import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Either (partitionEithers)
 import System.Environment (getArgs)
-import System.FilePath.Posix ((</>))
+import System.Exit
 
 main :: IO ()
 main = do
-    sourceName : flag <- getArgs
+    (sourceName, doLinear, doCompo) <- do
+        args <- getArgs
+        case args of
+            [flag, sourceName] -> return (sourceName, flag == "--linear", flag == "--compositional")
+            [sourceName] -> return (sourceName, True, True)
+            _ -> do
+                putStrLn $ unlines [ "Usage:"
+                                   , "  hm-compo {--linear|--compositional} filename.hm"
+                                   ]
+                exitFailure
     let loc = initialPos sourceName
     s <- readFile sourceName
     decls <- case runP sourceName decl s of
@@ -37,24 +46,19 @@ main = do
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    let result = runTypeChecker loc dataDefs' varDefs $ case flag of
-            ["--Lin"] -> [runLinear]
-            ["--Comp"] -> [runCompo]
-            ["--LinComp"] -> [runLinear, runCompo]
-            _ -> [runLinear]
+    let runTypeChecker f = prettyTops $ f dataDefs' varDefs
 
-    case result of
-        [r] -> print r
-        [l, c] -> do
-            putStrLn "Linear typechecker: "
-            print l
+    when doLinear $ do
+        when doCompo $ do
+            putStrLn "Linear typechecker:"
             putStrLn ""
-            putStrLn "-----------------------------------------------------------------------"
-            putStrLn "Compositional typechecker: "
-            print c
-    putStrLn ""
-  where
-    runTypeChecker loc dataDefs varDefs fs = map (\f -> prettyTops $ f dataDefs varDefs) fs
+        print $ runTypeChecker runLinear
+        when doCompo $ do
+            putStrLn $ replicate 80 '-'
+            putStrLn "Compositional typechecker:"
+            putStrLn ""
+    when doCompo $ do
+        print $ runTypeChecker runCompo
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
