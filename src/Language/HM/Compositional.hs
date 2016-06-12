@@ -12,7 +12,6 @@ import Language.HM.Syntax
 import Language.HM.Meta
 import Language.HM.Compositional.Error
 import Language.HM.Pretty
-import Text.Parsec.Pos
 
 import Control.Monad.ST
 import Control.Unification.Types
@@ -198,7 +197,7 @@ tyCheckBinds binds body = go mempty $ partitionBinds binds
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
 
-runM :: (Pretty loc) => SourceName -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
-runM sourceName dataCons = runTC sourceName dataCons Ctx{..}
+runM :: (Pretty loc) => loc -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
+runM loc dataCons = runTC loc dataCons Ctx{..}
   where
     polyVars = mempty

@@ -6,7 +6,6 @@ import Language.HM.Monad
 import Language.HM.Syntax
 import Language.HM.Meta
 import Language.HM.Error
-import Text.Parsec.Pos
 
 import Control.Monad.ST
 import Control.Unification.Types
@@ -115,7 +114,7 @@ tyInfer e = do
     ty <- UVar <$> freshVar
     tyCheck ty e
 
-runM :: (Pretty loc) => SourceName -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
-runM sourceName dataCons = runTC sourceName dataCons Ctx{..}
+runM :: (Pretty loc) => loc -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
+runM loc dataCons = runTC loc dataCons Ctx{..}
   where
     polyVars = mempty
