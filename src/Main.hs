@@ -21,9 +21,13 @@ import Data.Maybe
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Either (partitionEithers)
+import System.Environment (getArgs)
+import System.FilePath.Posix ((</>))
 
 main :: IO ()
 main = do
+    sourceName : flag <- getArgs
+    let loc = initialPos sourceName
     s <- readFile sourceName
     decls <- case runP sourceName decl s of
         Left err -> error $ show err
@@ -33,13 +37,24 @@ main = do
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    -- let result = prettyTops $ runLinear dataDefs' varDefs
-    -- print result
-    -- putStrLn ""
-    let result = prettyTops $ runCompo dataDefs' varDefs
-    print result
+    let result = runTypeChecker loc dataDefs' varDefs $ case flag of
+            ["--Lin"] -> [runLinear]
+            ["--Comp"] -> [runCompo]
+            ["--LinComp"] -> [runLinear, runCompo]
+            _ -> [runLinear]
+
+    case result of
+        [r] -> print r
+        [l, c] -> do
+            putStrLn "Linear typechecker: "
+            print l
+            putStrLn ""
+            putStrLn "-----------------------------------------------------------------------"
+            putStrLn "Compositional typechecker: "
+            print c
+    putStrLn ""
   where
-    sourceName = "demo/demo2.hm"
+    runTypeChecker loc dataDefs varDefs fs = map (\f -> prettyTops $ f dataDefs varDefs) fs
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
