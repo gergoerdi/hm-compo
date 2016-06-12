@@ -1,5 +1,4 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances #-}
-{-# LANGUAGE RecordWildCards, TupleSections #-}
 module Language.HM.Compositional.Error where
 
 import Language.HM.Syntax
@@ -17,10 +16,11 @@ import qualified Data.Map.Strict as Map
 import Data.List (sort, nub)
 import Data.Monoid ((<>))
 
-data Typing0 var t v = Map var (UTerm t v) :- (UTerm t v)
+type MonoCtx0 var t v = Map var (UTerm t v)
+data Typing0 var t v = MonoCtx0 var t v :- (UTerm t v)
 
 data ErrC0 t v = UErrC [(Doc, Typing0 Var t v)] (Maybe Var) (UTerm t v) (UTerm t v) (UFailure t v)
-               | BErrC (Map Var (UTerm t v)) (Doc, Typing0 Var t v) Var (UTerm t v) (UTerm t v) (UFailure t v)
+               | BErrC (MonoCtx0 Var t v) (Doc, Typing0 Var t v) Var (UTerm t v) (UTerm t v) (UFailure t v)
                | ErrC String
 
 pprErrTypes :: UTerm Ty0 v -> UTerm Ty0 v -> Ppr v Doc

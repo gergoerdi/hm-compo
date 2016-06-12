@@ -12,7 +12,6 @@ import Language.HM.Syntax
 import Language.HM.Meta
 import Language.HM.Compositional.Error
 import Language.HM.Pretty
-import Text.Parsec.Pos
 
 import Control.Monad.ST
 import Control.Unification.Types
@@ -26,13 +25,17 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.List (sort, nub)
 
-type Err s loc = Tagged (ErrC0 Ty0 (MVar s)) (loc, Doc)
+type ErrC s = ErrC0 Ty0 (MVar s)
+type Err s loc = Tagged (ErrC s) (loc, Doc)
+
+type MonoCtx s = MonoCtx0 Var Ty0 (MVar s)
 type Typing = Typing0 Var Ty0
 type MTyping s = Typing (MVar s)
 
-data Ctx s loc = Ctx{ polyVars :: Map Var (MTyping s) }
+type PolyCtx s = Map Var (MTyping s)
+data Ctx s loc = Ctx{ polyVars :: PolyCtx s }
 
-type M s loc = TC (Ctx s loc) (ErrC0 Ty0 (MVar s)) s loc
+type M s loc = TC (Ctx s loc) (ErrC s) s loc
 
 withMonoVar :: Var -> M s loc a -> M s loc a
 withMonoVar v = withMonoVars [v]
@@ -49,53 +52,52 @@ withMonoVars vs body = do
 withPolyVars :: Map Var (MTyping s) -> M s loc a -> M s loc a
 withPolyVars vtys = local $ \pc -> pc{ polyVars = Map.union vtys $ polyVars pc }
 
-unzipTypings :: [Typing0 var t v] -> ([Map var (UTerm t v)], [UTerm t v])
+unzipTypings :: [Typing0 var t v] -> ([MonoCtx0 var t v], [UTerm t v])
 unzipTypings typs = unzip [(mc, t) | mc :- t <- typs]
 
-unifyTypings :: [(Doc, MTyping s)] -> [(MTy s, MTy s)] -> M s loc (Map Var (MTy s))
+unifyTypings :: [(Doc, MTyping s)] -> [(MTy s, MTy s)] -> M s loc (MonoCtx s)
 unifyTypings ucs tyeqs = do
-    forM_ tyeqs $ \(t, u) -> runUnify Nothing t u
-    flip Map.traverseWithKey (zipMaps mcs) $ \var ts -> case ts of
-        [] -> UVar <$> freshVar
-        [t] -> return t
-        (t:us) -> do
-            forM_ ts $ \u -> runUnify (Just var) t u
-            return t
+    forM_ tyeqs $ \(t, u) -> runUnify (mkError Nothing) t u
+    runUnifies (mkError . Just) mcs
   where
     mcs = [mc | (_ , mc :- _) <- ucs]
 
-    runUnify var t u = do
-        res <- runExceptT $ unify t u
-        case res of
-            Left err -> do
-                ucs <- traverse (traverse zonkTyping) ucs
-                t <- zonk t
-                u <- zonk u
-                throwError $ UErrC ucs var t u err
-            Right ok -> return ok
+    mkError var t u uerr = do
+        ucs <- traverse (traverse zonkTyping) ucs
+        return $ UErrC ucs var t u uerr
 
-unifyBindings :: Map Var (MTy s) -> (Doc, MTyping s) -> M s loc (MTyping s)
+unifyBindings :: MonoCtx s -> (Doc, MTyping s) -> M s loc (MTyping s)
 unifyBindings mcBinds uc = do
-    mc <- flip Map.traverseWithKey (zipMaps [mcBinds, mc]) $ \var ts -> case ts of
-        [] -> UVar <$> freshVar
-        [t] -> return t
-        (t:us) -> do
-            forM_ ts $ \u -> runUnify var t u
-            return t
+    mc <- runUnifies mkError [mcBinds, mc]
     return $ mc :- t
   where
     (doc, mc :- t) = uc
 
-    runUnify var t u = do
-        res <- runExceptT $ unify t u
-        case res of
-            Left err -> do
-                mcBinds <- traverse zonk mcBinds
-                uc <- traverse zonkTyping uc
-                t <- zonk t
-                u <- zonk u
-                throwError $ BErrC mcBinds uc var t u err
-            Right ok -> return ok
+    mkError var t u uerr = do
+        mcBinds <- traverse zonk mcBinds
+        uc <- traverse zonkTyping uc
+        return $ BErrC mcBinds uc var t u uerr
+
+runUnifies :: (Var -> MTy s -> MTy s -> UFailure Ty0 (MVar s) -> M s loc (ErrC s))
+           -> [MonoCtx s] -> M s loc (MonoCtx s)
+runUnifies mkError mcs = flip Map.traverseWithKey (zipMaps mcs) $ \var ts ->
+  case ts of
+      [] -> UVar <$> freshVar
+      [t] -> return t
+      (t:us) -> do
+          forM_ ts $ \u -> runUnify (mkError var) t u
+          return t
+
+runUnify :: (MTy s -> MTy s -> UFailure Ty0 (MVar s) -> M s loc (ErrC s))
+         -> MTy s -> MTy s -> M s loc ()
+runUnify mkError t u = do
+    res <- runExceptT $ unify t u
+    case res of
+        Left err -> do
+            t <- zonk t
+            u <- zonk u
+            throwError =<< mkError t u err
+        Right ok -> return ok
 
 unifyMany :: [MTy s] -> ExceptT (UFailure Ty0 (MVar s)) (M s loc) (MTy s)
 unifyMany [] = UVar <$> lift freshVar
@@ -177,7 +179,7 @@ tyInferPat lpat@(Tagged _ pat) = withLoc lpat $ case pat of
         mc <- unifyTypings ucs (zip tArgs ts)
         return $ mc :- t
 
-tyCheckBinds :: [(Var, Term loc)] -> (Map Var (MTy s) -> M s loc a) -> M s loc a
+tyCheckBinds :: [(Var, Term loc)] -> (MonoCtx s -> M s loc a) -> M s loc a
 tyCheckBinds binds body = go mempty $ partitionBinds binds
   where
     go mc0 (bs:bss) = do
@@ -195,7 +197,7 @@ tyCheckBinds binds body = go mempty $ partitionBinds binds
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
 
-runM :: (Pretty loc) => SourceName -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
-runM sourceName dataCons = runTC sourceName dataCons Ctx{..}
+runM :: (Pretty loc) => loc -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
+runM loc dataCons = runTC loc dataCons Ctx{..}
   where
     polyVars = mempty

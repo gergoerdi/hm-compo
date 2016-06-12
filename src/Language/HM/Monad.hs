@@ -74,14 +74,13 @@ freshTVar :: TC ctx err s loc TVar
 freshTVar = TC $ get <* modify succ
 
 runTC :: (Pretty loc, Pretty err)
-      => SourceName
+      => loc
       -> Map DCon PolyTy
       -> ctx
       -> TC ctx err s loc a
       -> ST s (Either Doc a)
-runTC sourceName dataCons ctx act = do
-    let pos = initialPos sourceName
-        -- loc = (pos, empty)
+runTC pos dataCons ctx act = do
+    let loc = (pos, text "Top-level bindings")
     (x, _, _) <- runRWST (runExceptT $ unTC act) (R{..}, ctx) 0
     return $ either (Left . pPrintErr) Right $ x
   where

@@ -5,6 +5,7 @@ import Language.HM.Compositional (Typing0((:-)))
 import qualified Language.HM.Compositional as Compo
 import Language.HM.Meta (freezePoly, generalize, zonk, MTy)
 import Language.HM.Parser
+import Text.Parsec.Pos
 
 import Control.Unification
 import Control.Monad.ST
@@ -23,6 +24,7 @@ import Data.Either (partitionEithers)
 
 main :: IO ()
 main = do
+    let loc = initialPos sourceName
     s <- readFile sourceName
     decls <- case runP sourceName decl s of
         Left err -> error $ show err
@@ -32,10 +34,10 @@ main = do
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    -- let result = prettyTops $ runLinear sourceName dataDefs' varDefs
+    -- let result = prettyTops $ runLinear loc dataDefs' varDefs
     -- print result
     -- putStrLn ""
-    let result = prettyTops $ runCompo sourceName dataDefs' varDefs
+    let result = prettyTops $ runCompo loc dataDefs' varDefs
     print result
   where
     sourceName = "demo/demo2.hm"
@@ -47,11 +49,11 @@ prettyTops (Right vars) = vcat [ text name <+> dcolon <+> pPrint t
                                ]
 
 runLinear :: (Pretty loc)
-          => SourceName
+          => loc
           -> Map DCon PolyTy
           -> [(Var, Term loc)]
           -> Either Doc [(Var, PolyTy)]
-runLinear sourceName dataCons bindings = runST $ Linear.runM sourceName dataCons $ do
+runLinear loc dataCons bindings = runST $ Linear.runM loc dataCons $ do
     polyVars <- Linear.tyCheckBinds bindings $ asks Linear.polyVars
     return $ map freeze . Map.toList $ polyVars
   where
@@ -62,11 +64,11 @@ runLinear sourceName dataCons bindings = runST $ Linear.runM sourceName dataCons
                       ]
 
 runCompo :: (Pretty loc)
-         => SourceName
+         => loc
          -> Map DCon PolyTy
          -> [(Var, Term loc)]
          -> Either Doc [(Var, PolyTy)]
-runCompo sourceName dataCons bindings = runST $ Compo.runM sourceName dataCons $ do
+runCompo loc dataCons bindings = runST $ Compo.runM loc dataCons $ do
     Compo.tyCheckBinds bindings $ \mc -> do
         pvars <- asks Compo.polyVars
         let monos = [ (name, t) | (name, mc :- t) <- Map.toList pvars ]
