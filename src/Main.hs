@@ -21,10 +21,14 @@ import Data.Maybe
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 import Data.Either (partitionEithers)
+import System.Environment (getArgs)
+import System.FilePath.Posix ((</>))
 
 main :: IO ()
 main = do
-    let loc = initialPos sourceName
+    sourceName' : args <- getArgs
+    let sourceName = "demo" </> sourceName'
+        loc = initialPos sourceName
     s <- readFile sourceName
     decls <- case runP sourceName decl s of
         Left err -> error $ show err
@@ -39,8 +43,6 @@ main = do
     -- putStrLn ""
     let result = prettyTops $ runCompo loc dataDefs' varDefs
     print result
-  where
-    sourceName = "demo/demo2.hm"
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
