@@ -26,7 +26,7 @@ import System.FilePath.Posix ((</>))
 
 main :: IO ()
 main = do
-    sourceName' : args <- getArgs
+    sourceName' : flag <- getArgs
     let sourceName = "demo" </> sourceName'
         loc = initialPos sourceName
     s <- readFile sourceName
@@ -38,11 +38,24 @@ main = do
         toEither (DataDef dcon ty) = Left (dcon, ty)
         toEither (VarDef var term) = Right (var, term)
 
-    -- let result = prettyTops $ runLinear loc dataDefs' varDefs
-    -- print result
-    -- putStrLn ""
-    let result = prettyTops $ runCompo loc dataDefs' varDefs
-    print result
+    let result = runTypeChecker loc dataDefs' varDefs $ case flag of
+            ["--Lin"] -> [runLinear]
+            ["--Comp"] -> [runCompo]
+            ["--LinComp"] -> [runLinear, runCompo]
+            _ -> [runLinear]
+
+    case result of
+        [r] -> print r
+        [l, c] -> do
+            putStrLn "Linear typechecker: "
+            print l
+            putStrLn ""
+            putStrLn "-----------------------------------------------------------------------"
+            putStrLn "Compositional typechecker: "
+            print c
+    putStrLn ""
+  where
+    runTypeChecker loc dataDefs varDefs fs = map (\f -> prettyTops $ f loc dataDefs varDefs) fs
 
 prettyTops :: Either Doc [(Var, PolyTy)] -> Doc
 prettyTops (Left err) = err
