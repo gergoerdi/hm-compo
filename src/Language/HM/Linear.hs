@@ -114,7 +114,7 @@ tyInfer e = do
     ty <- UVar <$> freshVar
     tyCheck ty e
 
-runM :: (Pretty loc) => loc -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
-runM loc dataCons = runTC loc dataCons Ctx{..}
+runM :: (Pretty loc) => Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
+runM dataCons = runTC dataCons Ctx{..}
   where
     polyVars = mempty

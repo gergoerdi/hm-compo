@@ -197,7 +197,7 @@ tyCheckBinds binds body = go mempty $ partitionBinds binds
         withPolyVars pc $ go (Map.unions (mc0:mcs)) bss
     go mc0 [] = body mc0
 
-runM :: (Pretty loc) => loc -> Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
-runM loc dataCons = runTC loc dataCons Ctx{..}
+runM :: (Pretty loc) => Map DCon PolyTy -> M s loc a -> ST s (Either Doc a)
+runM dataCons = runTC dataCons Ctx{..}
   where
     polyVars = mempty

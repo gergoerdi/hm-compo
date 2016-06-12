@@ -25,9 +25,9 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
 data R loc = R{ dataCons :: Map DCon PolyTy
-              , loc :: (loc, Doc)
+              , loc :: Maybe (loc, Doc)
               }
-type Located err loc = Tagged err (loc, Doc)
+type Located err loc = Tagged err (Maybe (loc, Doc))
 
 newtype TC ctx err s loc a = TC{ unTC :: ExceptT (Located err loc) (RWST (R loc, ctx) () Int (ST s)) a }
                            deriving (Functor, Applicative, Monad)
@@ -68,25 +68,27 @@ askDataCon :: DCon -> TC ctx err s loc (Maybe PolyTy)
 askDataCon dcon = TC $ asks $ Map.lookup dcon . dataCons . fst
 
 withLoc :: (Pretty src) => Tagged src loc -> TC ctx err s loc a -> TC ctx err s loc a
-withLoc (Tagged loc src) = TC . local (first $ \r -> r{ loc = (loc, pPrint src) }) . unTC
+withLoc (Tagged loc src) = TC . local (first $ \r -> r{ loc = Just (loc, pPrint src) }) . unTC
 
 freshTVar :: TC ctx err s loc TVar
 freshTVar = TC $ get <* modify succ
 
 runTC :: (Pretty loc, Pretty err)
-      => loc
-      -> Map DCon PolyTy
+      => Map DCon PolyTy
       -> ctx
       -> TC ctx err s loc a
       -> ST s (Either Doc a)
-runTC pos dataCons ctx act = do
-    let loc = (pos, text "Top-level bindings")
+runTC dataCons ctx act = do
+    let loc = Nothing
     (x, _, _) <- runRWST (runExceptT $ unTC act) (R{..}, ctx) 0
     return $ either (Left . pPrintErr) Right $ x
   where
-    pPrintErr (Tagged (loc, src) err) =
-        vcat [ pPrint loc
-             , nest 4 src
+    pPrintErr (Tagged tag err) =
+        vcat [ loc
              , text ""
              , pPrint err
              ]
+      where
+        loc = case tag of
+            Nothing -> text "At the top level:"
+            Just (loc, src) -> pPrint loc $$ nest 4 src
