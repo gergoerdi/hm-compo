@@ -74,6 +74,12 @@ instance Pretty (TermF String String a) where
                    pPrintPrec level 0 f <+> pPrintPrec level 1 e
         Case e alts -> hang (text "case" <+> pPrintPrec level prec e <+> text "of") 2
                        (vcat (map (uncurry pPrintAlt) alts))
+        Let es f -> vcat [ text "let" <+> (vcat (map pPrintVar es))
+                         , text "in" <+> pPrintPrec level prec f
+                         ]
+
+pPrintVar :: (String, Term0 String String a) -> Doc
+pPrintVar (v, e) = text v <+> text "=" <+> pPrint e
 
 pPrintAlt :: Pat0 String String loc -> Term0 String String loc -> Doc
 pPrintAlt p e = pPrint p <+> text "->" <+> pPrint e

@@ -11,4 +11,12 @@ isJust = \m -> case m of
     Just _ -> True
 
 f = \x -> let y = not x
+              z = False
   in (isJust x)
+
+-- g = \x -> let y = not x
+--   in (isJust x)
+
+-- f = \m -> case m of
+--     Nothing -> False
+--     Just x -> Just x
