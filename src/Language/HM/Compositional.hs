@@ -37,9 +37,6 @@ data Ctx s loc = Ctx{ polyVars :: PolyCtx s }
 
 type M s loc = TC (Ctx s loc) (ErrC s) s loc
 
-withMonoVar :: Var -> M s loc a -> M s loc a
-withMonoVar v = withMonoVars [v]
-
 withMonoVars :: [Var] -> M s loc a -> M s loc a
 withMonoVars vs body = do
     vtys <- traverse monoVar vs
@@ -132,7 +129,7 @@ tyInfer le@(Tagged _ e) = withLoc le $ case e of
             Just ct -> instantiate $ thaw ct
         return $ mempty :- ct
     Lam v e -> do
-        mc :- t <- withMonoVar v $ tyInfer e
+        mc :- t <- withMonoVars [v] $ tyInfer e
         u <- maybe (UVar <$> freshVar) return $ Map.lookup v mc
         return $ Map.delete v mc :- (u ~> t)
     App f e -> do

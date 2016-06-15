@@ -29,7 +29,9 @@ main = do
     (sourceName, doLinear, doCompo) <- do
         args <- getArgs
         case args of
-            [flag, sourceName] -> return (sourceName, flag == "--linear", flag == "--compositional")
+            [flag, sourceName]
+              | flag `elem` ["--linear"] -> return (sourceName, True, False)
+              | flag `elem` ["--compositional"] -> return (sourceName, False, True)
             [sourceName] -> return (sourceName, True, True)
             _ -> do
                 putStrLn $ unlines [ "Usage:"
