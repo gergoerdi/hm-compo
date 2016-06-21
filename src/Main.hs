@@ -40,7 +40,7 @@ main = do
                 exitFailure
     let loc = initialPos sourceName
     s <- readFile sourceName
-    decls <- case runP sourceName decl s of
+    decls <- case parseSource sourceName s of
         Left err -> error $ show err
         Right decls -> return $ decls
     let (dataDefs, varDefs) = partitionEithers $ map toEither decls

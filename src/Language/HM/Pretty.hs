@@ -3,6 +3,7 @@
 module Language.HM.Pretty where
 
 import Language.HM.Syntax
+import Language.HM.Parser
 import Language.HM.Remap
 
 import Text.Parsec.Pos
@@ -48,7 +49,8 @@ runPpr (Pair (Constant tvars) fill) =
 
 niceTVars :: Stream Doc
 niceTVars = fmap text $
-            Stream.prefix ["α", "β", "c", "d", "e", "f"] $
+            Stream.prefix ["a", "b", "c", "d", "e", "f"] $
+            -- Stream.prefix ["α", "β", "c", "d", "e", "f"] $
             fmap (\i -> 'a' : show i) $ Stream.iterate succ 0
 
 instance Pretty Ty where
@@ -93,6 +95,9 @@ instance Pretty SourcePos where
                       ]
       where
         coords = hcat [int (sourceLine src), comma, int (sourceColumn src)]
+
+instance Pretty SrcSpanInfo where
+    pPrint = text . show
 
 dcolon :: Doc
 dcolon = text "::"

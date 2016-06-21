@@ -1,220 +1,135 @@
 {-# LANGUAGE RecordWildCards #-}
 module Language.HM.Parser
-       ( runP, vlist, SourceName
-       , decl, term, Decl(..)
+       ( parseSource, Decl(..)
+       , SrcSpanInfo(..)
        ) where
 
-import Language.HM.Lexer
 import Language.HM.Syntax
+
 import Control.Unification
 import Data.Functor.Fixedpoint
-
-import Text.Parsec.Prim hiding (runP)
-import Text.Parsec.Error
-import Text.Parsec.Pos
-import Text.Parsec.Combinator
-
-import Control.Monad (void, guard)
-import Data.Char
-import Data.List (sort, nub)
+import Data.Map (Map)
 import qualified Data.Map as Map
+import Control.Monad (forM)
 
-data St = St{ colStack :: [Int] }
-
-startSt :: St
-startSt = St{ colStack = [0] } -- XX
-
-pushCol :: Int -> Parser a -> Parser a
-pushCol col p = push *> p <* pop
-  where
-    push = modifyState $ \st@St{..} -> st{ colStack = col:colStack }
-    pop = modifyState $ \st@St{..} -> st{ colStack = tail colStack }
-
-
-type Parser = Parsec [(SourcePos, Token)] St
-
-token' :: (Token -> Maybe a) -> Parser a
-token' = tokenPrim (showTok . snd) nextPos . (. snd)
-  where
-    showTok (Word s) = show s
-    showTok (Symbol s) = show s
-    showTok (Newline _) = "newline"
-
-    nextPos pos (pos', t) _ts = pos'
-
-satisfy :: (String -> Bool) -> Parser String
-satisfy p = word (\s -> guard (p s) >> return s)
-
-word :: (String -> Maybe a) -> Parser a
-word p = token' $ \t -> case t of
-    Word s -> p s
-    _ -> Nothing
-
-newline :: Parser Int
-newline = token' $ \t -> case t of
-    Newline col -> return col
-    _ -> Nothing
-
-newline' :: (Int -> Bool) -> Parser Int
-newline' good = do
-    i <- newline
-    guard $ good i
-    return i
-
-reserved :: String -> Parser ()
-reserved s = (<?> unwords ["keyword", "'" ++ s ++ "'"]) $ void $ satisfy (== s)
-
-symbol :: String -> Parser ()
-symbol s = (<?> unwords ["symbol", "'" ++ s ++ "'"]) $
-           token' $ \t -> case t of
-               Symbol s' | s' == s -> Just ()
-               _ -> Nothing
-
-conName :: Parser String
-conName = (<?> "constructor name") $ try $
-          satisfy $ \(c:_) -> isUpper c
-
-varName :: Parser String
-varName = (<?> "variable name") $ try $ do
-    s <- satisfy $ \(c:_) -> isLower c
-    if s `elem` ["data", "let", "in", "case", "of"]
-      then unexpected $ unwords ["reserved word", show s]
-      else return s
-
-parens :: Parser a -> Parser a
-parens = between lparen rparen
-  where
-    lparen = symbol "("
-    rparen = symbol ")"
+import Language.Haskell.Exts.Annotated.Parser
+import Language.Haskell.Exts.Annotated (SrcSpanInfo, SrcLoc, ParseResult(..))
+import qualified Language.Haskell.Exts.Annotated as HSE
 
 data Decl tag = DataDef DCon PolyTy
               | VarDef Var (Term tag)
               deriving Show
 
-decl :: Parser [Decl SourcePos]
-decl = fmap concat . vlist $
-       choice [ mapM ppDataDef =<< dataDef
-              , (:[]) . uncurry VarDef <$> binding
-              ]
+
+type ParseError = (SrcLoc, String)
+
+parseSource :: FilePath -> String -> Either String [Decl SrcSpanInfo]
+parseSource sourceName s = case fromModule =<< parseModuleWithMode mode s of
+    ParseOk decls -> Right decls
+    ParseFailed loc err -> Left $ unlines [show loc, err]
   where
-    ppDataDef (dcon, tvs, ty) = do
-        let tvids = Map.fromList $ tvs `zip` [0..]
-            tv a = maybe (fail "Unsupported: existential type variables") return $
-                   Map.lookup a tvids
-        ty' <- traverse tv ty
-        return $ DataDef dcon ty'
+    mode = HSE.defaultParseMode{ HSE.parseFilename = sourceName }
 
-tyPart :: Parser (UTerm Ty0 String)
-tyPart = choice [ parens ty
-                , UVar <$> varName
-                , UTerm <$> (TApp <$> conName <*> pure [])
-                ]
+err :: (HSE.SrcInfo loc, HSE.Annotated ast) => ast loc -> ParseResult a
+err ast = ParseFailed (HSE.getPointLoc . HSE.ann $ ast) "Unsupported Haskell syntax"
 
-ty :: Parser (UTerm Ty0 String)
-ty = foldr1 (\t u -> UTerm $ TFun t u) <$> tyPart' `sepBy1` symbol "->"
+fromModule :: (HSE.SrcInfo loc) => HSE.Module loc -> ParseResult [Decl loc]
+fromModule (HSE.Module _ Nothing [] [] decls) = concat <$> mapM fromDecl decls
+fromModule mod = err mod
+
+fromName :: (HSE.SrcInfo loc) => HSE.Name loc -> ParseResult String
+fromName (HSE.Ident _ var) = return var
+fromName name = err name
+
+fromQName :: (HSE.SrcInfo loc) => HSE.QName loc -> ParseResult String
+fromQName (HSE.UnQual _ name) = fromName name
+fromQName qname = err qname
+
+fromDecl :: (HSE.SrcInfo loc) => HSE.Decl loc -> ParseResult [Decl loc]
+fromDecl (HSE.DataDecl _ (HSE.DataType _) Nothing dhead cons Nothing) =
+    fromData dhead cons
+fromDecl decl = do
+    (name, term) <- fromBind decl
+    return [VarDef name term]
+
+fromBind :: (HSE.SrcInfo loc) => HSE.Decl loc -> ParseResult (Var, Term loc)
+fromBind (HSE.PatBind _ (HSE.PVar _ name) (HSE.UnGuardedRhs _ exp) Nothing) =
+    (,) <$> fromName name <*> fromExp exp
+fromBind decl = err decl
+
+fromData :: (HSE.SrcInfo loc) => HSE.DeclHead loc -> [HSE.QualConDecl loc] -> HSE.ParseResult [Decl loc]
+fromData dhead cons = do
+    (tcon, tvNames) <- splitDataHead dhead
+    let tvs = tvNames `zip` [0..]
+        ty = UTerm $ TApp tcon $ map (UVar . snd) tvs
+        toDConTy = foldr (\t u -> UTerm $ TFun t u) ty
+    forM cons $ \con -> do
+        (dcon, argTys) <- fromCon (Map.fromList tvs) con
+        return $ DataDef dcon $ toDConTy argTys
+
+splitDataHead :: (HSE.SrcInfo loc) => HSE.DeclHead loc -> ParseResult (TCon, [String])
+splitDataHead dhead = case dhead of
+    HSE.DHead _ dcon -> do
+        dcon <- fromName dcon
+        return (dcon, [])
+    HSE.DHParen _ dhead -> splitDataHead dhead
+    HSE.DHApp _ dhead (HSE.UnkindedVar _ tvName) -> do
+        (dcon, tvs) <- splitDataHead dhead
+        tv <- fromName tvName
+        return (dcon, tvs ++ [tv])
+    dhead -> err dhead
+
+fromCon :: (HSE.SrcInfo loc) => Map String TVar -> HSE.QualConDecl loc -> ParseResult (DCon, [PolyTy])
+fromCon tvs (HSE.QualConDecl _ Nothing Nothing (HSE.ConDecl _ dcon tys)) = do
+    dcon <- fromName dcon
+    tys <- mapM (fromTy []) tys
+    return (dcon, tys)
   where
-    tyPart' = choice [ parens ty
-                     , UVar <$> varName
-                     , UTerm <$> (TApp <$> conName <*> many tyPart)
-                     ]
+    fromTy tyArgs (HSE.TyVar _ tvName) = do
+        tvName <- fromName tvName
+        UVar <$> tv tvName
+    fromTy tyArgs (HSE.TyCon _ qname) = do
+        tcon <- fromQName qname
+        return $ UTerm $ TApp tcon tyArgs
+    fromTy tyArgs (HSE.TyApp _ t u) = do
+        u <- fromTy [] u
+        fromTy (u:tyArgs) t
+    fromTy [] (HSE.TyFun _ t u) = UTerm <$> (TFun <$> fromTy [] t <*> fromTy [] u)
+    fromTy tyArgs (HSE.TyParen _ ty) = fromTy tyArgs ty
+    fromTy _ ty = err ty
 
-dataDef :: Parser [(DCon, [String], UTerm Ty0 String)]
-dataDef = do
-    ((tname, params), dconSpecs) <- (,) <$> header <*> dcon `sepBy` symbol "|"
-    let t = UTerm $ TApp tname $ map UVar params
-        toDConTy = foldr (\t u -> UTerm $ TFun t u) t
-    return [(dcon, params, dconTy) | (dcon, ts) <- dconSpecs, let dconTy = toDConTy ts]
-  where
-    header = reserved "data" *> ((,) <$> conName <*> many varName) <* symbol "="
-    dcon = (,) <$> conName <*> many tyPart
+    tv a = maybe (fail "Unsupported: existential type variables") return $
+           Map.lookup a tvs
+fromCon tvs qcd = err qcd
 
-distinct :: (Ord a) => [a] -> Bool
-distinct xs = let xs' = sort xs in nub xs' == xs'
+fromExp :: (HSE.SrcInfo loc) => HSE.Exp loc -> ParseResult (Term loc)
+fromExp (HSE.Var loc qname) =
+    Tagged loc <$> (Var <$> fromQName qname)
+fromExp (HSE.Con loc qname) =
+    Tagged loc <$> (Con <$> fromQName qname)
+fromExp (HSE.Lambda loc [HSE.PVar _ var] body) =
+    Tagged loc <$> (Lam <$> fromName var <*> fromExp body)
+fromExp (HSE.App loc f e) =
+    Tagged loc <$> (App <$> fromExp f <*> fromExp e)
+fromExp (HSE.Let loc binds body) =
+    Tagged loc <$> (Let <$> fromBinds binds <*> fromExp body)
+fromExp (HSE.Case loc exp alts) =
+    Tagged loc <$> (Case <$> fromExp exp <*> mapM fromAlt alts)
+fromExp (HSE.Paren _ exp) = fromExp exp
+fromExp exp = err exp
 
-vlist :: Parser a -> Parser [a]
-vlist p = do
-    col <- newline
-    let cont = try $ newline' (== col)
-    pushCol col $ p `sepBy` cont
+fromBinds :: (HSE.SrcInfo loc) => HSE.Binds loc -> ParseResult [(Var, Term loc)]
+fromBinds (HSE.BDecls _ decls) = mapM fromBind decls
+fromBinds b = err b
 
-multiline1 :: Parser a -> Parser [a]
-multiline1 p = do
-    St{ colStack = col:_ } <- getState
-    let cont = try $ newline' (> col)
-    concat <$> many1 p `sepBy1` cont
+fromAlt :: (HSE.SrcInfo loc) => HSE.Alt loc -> ParseResult (Pat loc, Term loc)
+fromAlt (HSE.Alt _ pat (HSE.UnGuardedRhs _ exp) Nothing) =
+    (,) <$> fromPat pat <*> fromExp exp
+fromAlt alt = err alt
 
-term :: Parser (Term SourcePos)
-term = foldl1 app <$> multiline1 atom
-  where
-    app :: Term SourcePos -> Term SourcePos -> Term SourcePos
-    app f@(Tagged loc1 _) e@(Tagged loc2 _) = Tagged loc1 (App f e)
-
-    atom = choice [ parens term
-                  , tag $ letBlock
-                  , tag $ caseBlock
-                  , tag $ Var <$> varName
-                  , tag $ Con <$> conName
-                  , tag $ Lam <$> (symbol "\\" *> varName <* symbol "->") <*> term
-                  ]
-
-    letBlock = do
-        St{ colStack = col:_ } <- getState
-        bindings <- iblock_ (reserved "let") binding
-        body <- bodyNewline col <|> bodyHere
-        return $ Let bindings body
-      where
-        bodyHere = reserved "in" *> term
-        bodyNewline col = do
-            i <- try $ newline' (>= col)
-            pushCol i bodyHere
-
-
-    caseBlock = iblock Case (reserved "case" *> term <* reserved "of") alt
-
-    alt = (,) <$> (pat <* symbol "->") <*> term
-
-binding :: Parser (Var, Term SourcePos)
-binding = do
-    var <- varName
-    col' <- sourceColumn <$> getPosition
-    symbol "="
-    def <- pushCol (succ col') term
-    return (var, def)
-
-pat :: Parser (Pat SourcePos)
-pat = (<?> "pattern") $
-      choice [ parens pat
-             , tag $ PVar <$> varName
-             , tag $ symbol "_" *> pure PWild
-             , tag $ PCon <$> conName <*> many pat
-             ]
-
-iblock_ :: Parser x -> Parser a -> Parser [a]
-iblock_ = iblock (const id)
-
-iblock :: (a -> [b] -> c) -> Parser a -> Parser b -> Parser c
-iblock f header body = do
-    St{ colStack = col:_ } <- getState
-    x <- header
-    let startInline = do
-            col' <- sourceColumn <$> getPosition
-            y <- body
-            ys <- option [] $ startNewline col'
-            return $ y:ys
-        startNewline col = do
-            i <- try $ newline' (>= col)
-            let cont = try $ newline' (== i)
-            pushCol i $ body `sepBy` cont
-    ys <- startNewline (col + 1) <|> startInline
-    return $ f x ys
-
-tag :: Parser a -> Parser (Tagged a SourcePos)
-tag p = do
-    pos <- getPosition
-    x <- p
-    return $ Tagged pos x
-
-runP :: SourceName -> Parser a -> String -> Either ParseError a
-runP sourceName p s = case tokenize sourceName s of
-    Nothing -> Left $ newErrorMessage (Message "Tokenization failed") $ initialPos ""
-    Just ts -> runParser p startSt "" ts
+fromPat :: (HSE.SrcInfo loc) => HSE.Pat loc -> ParseResult (Pat loc)
+fromPat (HSE.PVar loc var) = Tagged loc <$> (PVar <$> fromName var)
+fromPat (HSE.PWildCard loc) = return $ Tagged loc PWild
+fromPat (HSE.PApp loc qname pats) = Tagged loc <$> (PCon <$> fromQName qname <*> mapM fromPat pats)
+fromPat (HSE.PParen _ pat) = fromPat pat
+fromPat pat = error $ show $ fmap (const ()) pat
