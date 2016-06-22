@@ -5,7 +5,6 @@ import Language.HM.Compositional (Typing0((:-)))
 import qualified Language.HM.Compositional as Compo
 import Language.HM.Meta (freezePoly, generalize, zonk, MTy)
 import Language.HM.Parser
-import Text.Parsec.Pos
 
 import Control.Unification
 import Control.Monad.ST
@@ -38,7 +37,6 @@ main = do
                                    , "  hm-compo {--linear|--compositional} filename.hm"
                                    ]
                 exitFailure
-    let loc = initialPos sourceName
     s <- readFile sourceName
     decls <- case parseSource sourceName s of
         Left err -> error $ show err

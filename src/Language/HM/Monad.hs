@@ -10,7 +10,6 @@ module Language.HM.Monad where
 import Language.HM.Syntax
 import Language.HM.Meta
 import Language.HM.Error
-import Text.Parsec.Pos
 
 import Control.Monad.ST
 import Data.STRef
