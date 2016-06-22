@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
-
+{-# LANGUAGE RecordWildCards #-}
 module Language.HM.Pretty where
 
 import Language.HM.Syntax
@@ -88,15 +88,14 @@ pPrintAlt p e = pPrint p <+> text "->" <+> pPrint e
 instance (Pretty a) => Pretty (Tagged a tag) where
     pPrintPrec level prec = pPrintPrec level prec . unTag
 
--- instance Pretty SourcePos where
---     pPrint src = hsep [ text (sourceName src)
---                       , parens coords <> colon
---                       ]
---       where
---         coords = hcat [int (sourceLine src), comma, int (sourceColumn src)]
+instance Pretty SrcLoc where
+    pPrint SrcLoc{..} =
+        text srcFilename <+> parens coords <> colon
+      where
+        coords = int srcLine <> comma <> int srcColumn
 
 instance Pretty SrcSpanInfo where
-    pPrint = text . show
+    pPrint = pPrint . getPointLoc
 
 dcolon :: Doc
 dcolon = text "::"

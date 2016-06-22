@@ -1,7 +1,7 @@
 {-# LANGUAGE RecordWildCards #-}
 module Language.HM.Parser
        ( parseSource, Decl(..)
-       , SrcSpanInfo(..)
+       , SrcSpanInfo(..), SrcLoc(..), HSE.getPointLoc
        ) where
 
 import Language.HM.Syntax
@@ -132,4 +132,4 @@ fromPat (HSE.PVar loc var) = Tagged loc <$> (PVar <$> fromName var)
 fromPat (HSE.PWildCard loc) = return $ Tagged loc PWild
 fromPat (HSE.PApp loc qname pats) = Tagged loc <$> (PCon <$> fromQName qname <*> mapM fromPat pats)
 fromPat (HSE.PParen _ pat) = fromPat pat
-fromPat pat = error $ show $ fmap (const ()) pat
+fromPat pat = err pat
