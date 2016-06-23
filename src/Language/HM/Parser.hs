@@ -5,12 +5,16 @@ module Language.HM.Parser
        ) where
 
 import Language.HM.Syntax
+import Language.HM.Pretty
 
 import Control.Unification
 import Data.Functor.Fixedpoint
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Control.Monad (forM)
+
+import Text.PrettyPrint
+import Text.PrettyPrint.HughesPJClass
 
 import Language.Haskell.Exts.Annotated.Parser
 import Language.Haskell.Exts.Annotated (SrcSpanInfo, SrcLoc, ParseResult(..))
@@ -23,10 +27,10 @@ data Decl tag = DataDef DCon PolyTy
 
 type ParseError = (SrcLoc, String)
 
-parseSource :: FilePath -> String -> Either String [Decl SrcSpanInfo]
+parseSource :: FilePath -> String -> Either Doc [Decl SrcSpanInfo]
 parseSource sourceName s = case fromModule =<< parseModuleWithMode mode s of
     ParseOk decls -> Right decls
-    ParseFailed loc err -> Left $ unlines [show loc, err]
+    ParseFailed loc err -> Left $ pPrint loc $$ text err
   where
     mode = HSE.defaultParseMode{ HSE.parseFilename = sourceName }
 
