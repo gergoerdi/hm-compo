@@ -1,3 +1,4 @@
 dist
 .stack-work
 Setup.hs
+hm-compo.cabal

@@ -1,0 +1,28 @@
+name: hm-compo
+synopsis: Compositional type checking for a Hindley-Milner type system
+version: 0.1.0
+category: Language
+license: MIT
+author:
+  - Gergő Érdi
+  - Viktória Kiss
+maintainer: gergo@erdi.hu
+github: gergoerdi/hm-compositional
+
+dependencies:
+  - base
+  - transformers
+  - mtl
+  - containers
+  - pretty
+  - boxes
+  - unification-fd
+  - Stream
+  - haskell-src-exts
+
+source-dirs: src
+data-files: demo/*.hm
+
+executables:
+  hm-compo:
+    main: Main.hs
