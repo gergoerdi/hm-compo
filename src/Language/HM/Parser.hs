@@ -16,9 +16,9 @@ import Control.Monad (forM)
 import Text.PrettyPrint
 import Text.PrettyPrint.HughesPJClass
 
-import Language.Haskell.Exts.Annotated.Parser
-import Language.Haskell.Exts.Annotated (SrcSpanInfo, SrcLoc, ParseResult(..))
-import qualified Language.Haskell.Exts.Annotated as HSE
+import Language.Haskell.Exts.Parser
+import Language.Haskell.Exts (SrcSpanInfo, SrcLoc, ParseResult(..))
+import qualified Language.Haskell.Exts as HSE
 
 data Decl tag = DataDef DCon PolyTy
               | VarDef Var (Term tag)

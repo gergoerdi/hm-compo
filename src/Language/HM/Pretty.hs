@@ -4,7 +4,7 @@ module Language.HM.Pretty where
 
 import Language.HM.Syntax
 import Language.HM.Remap
-import Language.Haskell.Exts.Annotated (SrcSpanInfo, SrcLoc(..), ParseResult(..), getPointLoc)
+import Language.Haskell.Exts (SrcSpanInfo, SrcLoc(..), ParseResult(..), getPointLoc)
 
 import Control.Unification
 import Data.Void
